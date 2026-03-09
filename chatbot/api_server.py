@@ -11,7 +11,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 import uvicorn
 
-from chatbot_backend import get_response, get_response_stream
+from chatbot_backend import get_response, get_response_stream, get_chat_history
 
 app = FastAPI(title="Gemini Chatbot API")
 
@@ -47,15 +47,27 @@ def chat(req: ChatRequest):
         return ChatResponse(response=f"⚠️ Error: {str(e)}")
 
 
+import json
+
 @app.post("/api/chat/stream", response_class=EventSourceResponse)
 def chat_stream(req: ChatRequest) -> Iterator[ServerSentEvent]:
     """Stream the chatbot response token-by-token via SSE."""
     try:
         for token in get_response_stream(req.message, thread_id=req.thread_id):
-            yield ServerSentEvent(raw_data=token, event="token")
-        yield ServerSentEvent(raw_data="", event="done")
+            yield ServerSentEvent(data=json.dumps({"token": token}), event="token")
+        yield ServerSentEvent(data=json.dumps({"token": ""}), event="done")
     except Exception as e:
-        yield ServerSentEvent(raw_data=f"⚠️ Error: {str(e)}", event="error")
+        yield ServerSentEvent(data=json.dumps({"error": f"⚠️ Error: {str(e)}"}), event="error")
+
+
+@app.get("/api/chat/{thread_id}")
+def get_chat(thread_id: str):
+    """Fetch chat history for a given thread_id."""
+    try:
+        history = get_chat_history(thread_id)
+        return {"history": history}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 if __name__ == "__main__":

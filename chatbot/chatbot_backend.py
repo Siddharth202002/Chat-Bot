@@ -11,7 +11,8 @@ from typing import Generator, TypedDict, Annotated
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END, add_messages
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
-from langgraph.checkpoint.memory import MemorySaver
+import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 
 # Load .env from the langraph root directory
@@ -40,7 +41,9 @@ def chat(state: Chat_State):
 
 
 # --- Graph ---
-checkpointer = MemorySaver()
+_db_path = Path(__file__).resolve().parent / "chat_memory.db"
+_conn = sqlite3.connect(str(_db_path), check_same_thread=False)
+checkpointer = SqliteSaver(conn=_conn)
 
 graph = StateGraph(Chat_State)
 graph.add_node("chat", chat)
@@ -97,3 +100,36 @@ def get_response_stream(user_input: str, thread_id: str = "1") -> Generator[str,
     # Save the complete AI response into the checkpoint for memory
     ai_msg = AIMessage(content=full_response)
     app.update_state(config, {"messages": [ai_msg]})
+
+
+def get_chat_history(thread_id: str) -> list[dict]:
+    """
+    Retrieve the chat history for a given thread ID from the checkpointer.
+    Returns a list of dictionaries with 'role' and 'content'.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        state = app.get_state(config)
+        
+        # If no state or no messages, return empty list
+        if not state or not hasattr(state, 'values') or "messages" not in state.values:
+            return []
+            
+        messages = state.values["messages"]
+        history = []
+        
+        for msg in messages:
+            # Map Langchain message types to simple roles
+            if isinstance(msg, HumanMessage):
+                history.append({"role": "user", "content": msg.content})
+            elif isinstance(msg, AIMessage):
+                # Skip tool calls or empty messages if any
+                if msg.content:
+                    history.append({"role": "assistant", "content": msg.content})
+            elif isinstance(msg, SystemMessage):
+                pass # Usually we don't show system messages to the user
+                
+        return history
+    except Exception as e:
+        print(f"Error fetching chat history for thread {thread_id}: {e}")
+        return []
