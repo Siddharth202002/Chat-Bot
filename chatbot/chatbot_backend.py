@@ -133,3 +133,51 @@ def get_chat_history(thread_id: str) -> list[dict]:
     except Exception as e:
         print(f"Error fetching chat history for thread {thread_id}: {e}")
         return []
+
+
+def get_all_chats() -> list[dict]:
+    """
+    Retrieve all unique chat threads from the SQLite database.
+    Returns a list of dictionaries with 'id' and 'title' (derived from the first message).
+    """
+    try:
+        # Query distinct thread IDs from the checkpoints table
+        cursor = _conn.cursor()
+        cursor.execute("SELECT DISTINCT thread_id FROM checkpoints ORDER BY rowid DESC")
+        threads = cursor.fetchall()
+        
+        chat_list = []
+        for (thread_id,) in threads:
+            # Fetch the history for each thread to derive a title
+            history = get_chat_history(thread_id)
+            if history:
+                # Find the first user message for the title
+                first_msg = next((msg["content"] for msg in history if msg["role"] == "user"), "New Chat")
+                
+                # Truncate title
+                title = first_msg if len(first_msg) <= 36 else first_msg[:36] + "…"
+                chat_list.append({"id": thread_id, "title": title})
+                
+        return chat_list
+    except Exception as e:
+        print(f"Error fetching all chats: {e}")
+        return []
+
+
+def delete_chat(thread_id: str) -> bool:
+    """
+    Deletes all messages and checkpoints associated with a given thread_id 
+    from the SQLite database.
+    """
+    try:
+        cursor = _conn.cursor()
+        # The sqlite checkpointer usually has checkpoints, checkpoints_writes, and checkpoints_blobs (in newer versions)
+        # However, deleting from checkpoints by thread_id is the primary way.
+        cursor.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,))
+        # It's also good practice to delete from writes/blobs if they exist, but deleting from checkpoints 
+        # is enough to make the LangGraph state start fresh and disappear from get_all_chats.
+        _conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting chat {thread_id}: {e}")
+        return False

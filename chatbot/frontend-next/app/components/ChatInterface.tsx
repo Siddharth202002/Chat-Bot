@@ -42,7 +42,7 @@ export default function ChatInterface() {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-    // Load saved theme and chat history on mount
+    // Load saved theme and fetch true chat history from database on mount
     useEffect(() => {
         const savedTheme = localStorage.getItem("chatbot-theme") as "dark" | "light" | null;
         if (savedTheme) {
@@ -50,14 +50,19 @@ export default function ChatInterface() {
             document.documentElement.setAttribute("data-theme", savedTheme);
         }
 
-        const savedHistory = localStorage.getItem("chatbot-history");
-        if (savedHistory) {
+        async function fetchHistory() {
             try {
-                setChatHistory(JSON.parse(savedHistory));
-            } catch (e) {
-                console.error("Failed to parse chat history:", e);
+                const res = await fetch(`${API_URL}/api/chats`);
+                const data = await res.json();
+                if (data.chats) {
+                    setChatHistory(data.chats);
+                }
+            } catch (err) {
+                console.error("Failed to fetch chat history from server:", err);
             }
         }
+
+        fetchHistory();
     }, []);
 
     // Apply theme changes
@@ -65,11 +70,6 @@ export default function ChatInterface() {
         document.documentElement.setAttribute("data-theme", theme);
         localStorage.setItem("chatbot-theme", theme);
     }, [theme]);
-
-    // Save chat history to local storage when it changes
-    useEffect(() => {
-        localStorage.setItem("chatbot-history", JSON.stringify(chatHistory));
-    }, [chatHistory]);
 
     function toggleTheme() {
         setTheme((prev) => (prev === "dark" ? "light" : "dark"));
@@ -178,6 +178,32 @@ export default function ChatInterface() {
             setMessages((prev) => [...prev, errorMsg]);
         } finally {
             setIsLoading(false);
+        }
+    }
+
+    async function handleDeleteChat(e: React.MouseEvent, id: string) {
+        e.stopPropagation();
+
+        try {
+            const res = await fetch(`${API_URL}/api/chat/${id}`, {
+                method: "DELETE",
+            });
+            const data = await res.json();
+
+            if (data.status === "ok") {
+                // Remove from local list
+                setChatHistory((prev) => prev.filter((chat) => chat.id !== id));
+
+                // If it was the currently active chat, reset the view
+                if (id === threadId) {
+                    setMessages([]);
+                    setThreadId(generateId());
+                }
+            } else {
+                console.error("Failed to delete chat:", data.error);
+            }
+        } catch (err) {
+            console.error("Error deleting chat:", err);
         }
     }
 
@@ -316,7 +342,17 @@ export default function ChatInterface() {
                                     className={`${styles.chatHistoryItem} ${chat.id === threadId ? styles.activeChat : ''}`}
                                     onClick={() => loadChat(chat.id)}
                                 >
-                                    💬 {chat.title}
+                                    <span className={styles.chatTitle}>💬 {chat.title}</span>
+                                    <button
+                                        className={styles.deleteBtn}
+                                        onClick={(e) => handleDeleteChat(e, chat.id)}
+                                        title="Delete chat"
+                                    >
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M3 6h18"></path>
+                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                        </svg>
+                                    </button>
                                 </div>
                             ))}
                         </div>

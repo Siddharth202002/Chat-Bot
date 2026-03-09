@@ -11,7 +11,7 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from pydantic import BaseModel
 import uvicorn
 
-from chatbot_backend import get_response, get_response_stream, get_chat_history
+from chatbot_backend import get_response, get_response_stream, get_chat_history, get_all_chats, delete_chat
 
 app = FastAPI(title="Gemini Chatbot API")
 
@@ -36,6 +36,16 @@ class ChatResponse(BaseModel):
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/chats")
+def get_chats():
+    """Fetch a list of all chat threads from the database."""
+    try:
+        chats = get_all_chats()
+        return {"chats": chats}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -66,6 +76,19 @@ def get_chat(thread_id: str):
     try:
         history = get_chat_history(thread_id)
         return {"history": history}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/chat/{thread_id}")
+def remove_chat(thread_id: str):
+    """Delete a chat thread and all its messages."""
+    try:
+        success = delete_chat(thread_id)
+        if success:
+            return {"status": "ok"}
+        else:
+            return {"error": "Failed to delete chat"}
     except Exception as e:
         return {"error": str(e)}
 
