@@ -35,6 +35,7 @@ export default function ChatInterface() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState("");
     const [isLoading, setIsLoading] = useState(false);
+    const [isStreaming, setIsStreaming] = useState(false);
     const [threadId, setThreadId] = useState(() => generateId());
     const [chatHistory, setChatHistory] = useState<ChatHistory[]>([]);
     const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -106,7 +107,6 @@ export default function ChatInterface() {
             if (!res.body) throw new Error("No response body");
 
             // Add an empty assistant message that we'll fill progressively
-            const assistantIdx = messages.length + 1; // +1 for the user msg we just added
             setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
             const reader = res.body.getReader();
@@ -137,6 +137,7 @@ export default function ChatInterface() {
                             }
                             if (parsed.token !== undefined) {
                                 accumulated += parsed.token;
+                                if (!isStreaming) setIsStreaming(true);
                             } else if (parsed.error) {
                                 accumulated += "\n\n" + parsed.error;
                             }
@@ -147,7 +148,7 @@ export default function ChatInterface() {
 
                         setMessages((prev) => {
                             const updated = [...prev];
-                            updated[assistantIdx] = {
+                            updated[updated.length - 1] = {
                                 role: "assistant",
                                 content: accumulated,
                             };
@@ -163,7 +164,7 @@ export default function ChatInterface() {
                 accumulated += buffer.slice(5);
                 setMessages((prev) => {
                     const updated = [...prev];
-                    updated[assistantIdx] = {
+                    updated[updated.length - 1] = {
                         role: "assistant",
                         content: accumulated,
                     };
@@ -178,6 +179,7 @@ export default function ChatInterface() {
             setMessages((prev) => [...prev, errorMsg]);
         } finally {
             setIsLoading(false);
+            setIsStreaming(false);
         }
     }
 
@@ -488,7 +490,7 @@ export default function ChatInterface() {
                             ))}
 
                             {/* Typing indicator */}
-                            {isLoading && (
+                            {isLoading && !isStreaming && (
                                 <div className={styles.typingIndicator}>
                                     <div className={styles.typingDots}>
                                         <span />

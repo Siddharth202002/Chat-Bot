@@ -7,10 +7,13 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 from typing import Generator, TypedDict, Annotated
+import requests
+from langchain_core.tools import tool
+from langchain_community.tools.ddg_search.tool import DuckDuckGoSearchRun
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END, add_messages
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage, ToolMessage
 import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -27,6 +30,53 @@ llm = ChatGoogleGenerativeAI(
     temperature=0.7
 )
 
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+
+# tool setup 
+search = DuckDuckGoSearchRun()
+
+@tool
+def Mathematical_calculations(num1: float, num2: float, operation: str) -> str:
+    """Use this tool to perform mathematical calculations between two numbers ."""
+    operation = operation.lower().strip()
+    if operation == "add":
+        return str(num1 + num2)
+    elif operation == "subtract":
+        return str(num1 - num2)
+    elif operation == "multiply":
+        return str(num1 * num2)
+    elif operation == "divide":
+        if num2 == 0:
+            return "Cannot divide by zero."
+        return str(num1 / num2)
+    else:
+        return "Invalid operation"
+
+
+@tool
+def get_stock_price(symbol: str) -> str:
+    """Get the latest stock price for a symbol using Finnhub."""
+    if not FINNHUB_API_KEY:
+        return "FINNHUB_API_KEY is not configured."
+
+    url = f"https://finnhub.io/api/v1/quote?symbol={symbol.upper()}&token={FINNHUB_API_KEY}"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        return f"Failed to fetch stock price: {exc}"
+
+    current_price = data.get("c")
+    if current_price in (None, 0):
+        return f"No stock price data found for {symbol.upper()}."
+
+    return str(current_price)
+
+tools=[search,Mathematical_calculations,get_stock_price]
+llm_with_tools = llm.bind_tools(tools)
+tools_by_name = {tool.name: tool for tool in tools}
+
 
 # --- State ---
 class Chat_State(TypedDict):
@@ -36,8 +86,45 @@ class Chat_State(TypedDict):
 # --- Node ---
 def chat(state: Chat_State):
     messages = state["messages"]
-    response = llm.invoke(messages)
+    response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
+
+
+def tool_node(state: Chat_State):
+    messages = state["messages"]
+    last_message = messages[-1]
+
+    if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
+        return {"messages": []}
+
+    tool_messages = []
+    for tool_call in last_message.tool_calls:
+        tool_name = tool_call["name"]
+        tool_args = tool_call.get("args", {})
+        tool_call_id = tool_call["id"]
+
+        tool_obj = tools_by_name.get(tool_name)
+        if tool_obj is None:
+            result = f"Tool '{tool_name}' is not available."
+        else:
+            try:
+                result = tool_obj.invoke(tool_args)
+            except Exception as exc:
+                result = f"Tool '{tool_name}' failed: {exc}"
+
+        tool_messages.append(
+            ToolMessage(content=str(result), name=tool_name, tool_call_id=tool_call_id)
+        )
+
+    return {"messages": tool_messages}
+
+
+def route_tools(state: Chat_State):
+    messages = state["messages"]
+    last_message = messages[-1]
+    if isinstance(last_message, AIMessage) and last_message.tool_calls:
+        return "tools"
+    return END
 
 
 # --- Graph ---
@@ -47,8 +134,11 @@ checkpointer = SqliteSaver(conn=_conn)
 
 graph = StateGraph(Chat_State)
 graph.add_node("chat", chat)
+graph.add_node("tools", tool_node)
 graph.add_edge(START, "chat")
-graph.add_edge("chat", END)
+graph.add_conditional_edges("chat", route_tools)
+graph.add_edge("tools", "chat")
+
 
 app = graph.compile(checkpointer=checkpointer)
 
@@ -64,7 +154,11 @@ def get_response(user_input: str, thread_id: str = "1") -> str:
     Returns:
         The AI's response text.
     """
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "metadata": {"thread_id": thread_id},
+        "run_name": "chat_turn",
+    }
     response = app.invoke(
         {"messages": [HumanMessage(content=user_input)]},
         config=config
@@ -79,27 +173,28 @@ def get_response_stream(user_input: str, thread_id: str = "1") -> Generator[str,
     Yields each text chunk as it arrives from the LLM, then saves
     the full response into the graph checkpoint for conversation memory.
     """
-    config = {"configurable": {"thread_id": thread_id}}
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "metadata": {"thread_id": thread_id},
+        "run_name": "chat_turn",
+    }
 
-    # Record the human message into the checkpoint first
-    human_msg = HumanMessage(content=user_input)
-    app.update_state(config, {"messages": [human_msg]})
+    final_content = ""
+    for event in app.stream(
+        {"messages": [HumanMessage(content=user_input)]},
+        config=config,
+        stream_mode="values",
+    ):
+        messages = event.get("messages", [])
+        if not messages:
+            continue
 
-    # Build the full message history for the LLM call
-    state = app.get_state(config)
-    messages = state.values["messages"]
+        last_message = messages[-1]
+        if isinstance(last_message, AIMessage) and last_message.content:
+            final_content = last_message.content
 
-    # Stream tokens from the LLM
-    full_response = ""
-    for chunk in llm.stream(messages):
-        token = chunk.content
-        if token:
-            full_response += token
-            yield token
-
-    # Save the complete AI response into the checkpoint for memory
-    ai_msg = AIMessage(content=full_response)
-    app.update_state(config, {"messages": [ai_msg]})
+    if final_content:
+        yield final_content
 
 
 def get_chat_history(thread_id: str) -> list[dict]:
@@ -181,3 +276,7 @@ def delete_chat(thread_id: str) -> bool:
     except Exception as e:
         print(f"Error deleting chat {thread_id}: {e}")
         return False
+
+if __name__ == "__main__":
+    result = get_stock_price.invoke({"symbol": "AAPL"})
+    print("Result:", result)  
