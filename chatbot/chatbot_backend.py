@@ -10,12 +10,21 @@ from typing import Generator, TypedDict, Annotated
 import requests
 from langchain_core.tools import tool
 from langchain_community.tools.ddg_search.tool import DuckDuckGoSearchRun
+from groq import Groq
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END, add_messages
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import (
+    SystemMessage,
+    HumanMessage,
+    AIMessage,
+    BaseMessage,
+    ToolMessage,
+    message_chunk_to_message,
+)
 import sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langchain_groq import ChatGroq
 
 
 # Load .env from the langraph root directory
@@ -24,11 +33,19 @@ load_dotenv(_env_path)
 
 
 # --- LLM Setup ---
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    api_key=os.getenv("gemini-api-key"),
-    temperature=0.7
+
+
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    temperature=0
 )
+
+
+# llm = ChatGoogleGenerativeAI(
+#     model="gemini-2.5-flash",
+#     api_key=os.getenv("gemini-api-key"),
+#     temperature=0.7
+# )
 
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
@@ -168,33 +185,79 @@ def get_response(user_input: str, thread_id: str = "1") -> str:
 
 def get_response_stream(user_input: str, thread_id: str = "1") -> Generator[str, None, None]:
     """
-    Stream the chatbot response token-by-token.
+    Stream the chatbot response incrementally.
 
-    Yields each text chunk as it arrives from the LLM, then saves
-    the full response into the graph checkpoint for conversation memory.
+    `app.stream(..., stream_mode="values")` yields the graph state after the
+    node finishes, so it buffers the full answer. For live streaming we stream
+    directly from the model, run any requested tools, and persist the completed
+    turn back into the LangGraph checkpoint when generation ends.
     """
     config = {
         "configurable": {"thread_id": thread_id},
         "metadata": {"thread_id": thread_id},
         "run_name": "chat_turn",
     }
+    state = app.get_state(config)
+    prior_messages: list[BaseMessage] = []
+    if state and hasattr(state, "values"):
+        prior_messages = list(state.values.get("messages", []))
 
-    final_content = ""
-    for event in app.stream(
-        {"messages": [HumanMessage(content=user_input)]},
-        config=config,
-        stream_mode="values",
-    ):
-        messages = event.get("messages", [])
-        if not messages:
-            continue
+    delta_messages: list[BaseMessage] = [HumanMessage(content=user_input)]
+    working_messages = [*prior_messages, *delta_messages]
 
-        last_message = messages[-1]
-        if isinstance(last_message, AIMessage) and last_message.content:
-            final_content = last_message.content
+    while True:
+        streamed_chunk = None
 
-    if final_content:
-        yield final_content
+        for chunk in llm_with_tools.stream(working_messages):
+            streamed_chunk = chunk if streamed_chunk is None else streamed_chunk + chunk
+
+            if isinstance(chunk.content, str):
+                if chunk.content:
+                    yield chunk.content
+            elif isinstance(chunk.content, list):
+                for item in chunk.content:
+                    if isinstance(item, str) and item:
+                        yield item
+                    elif isinstance(item, dict) and item.get("text"):
+                        yield str(item["text"])
+
+        if streamed_chunk is None:
+            break
+
+        ai_message = message_chunk_to_message(streamed_chunk)
+        delta_messages.append(ai_message)
+        working_messages.append(ai_message)
+
+        if not isinstance(ai_message, AIMessage) or not ai_message.tool_calls:
+            break
+
+        tool_messages = []
+        for tool_call in ai_message.tool_calls:
+            tool_name = tool_call["name"]
+            tool_args = tool_call.get("args", {})
+            tool_call_id = tool_call["id"]
+
+            tool_obj = tools_by_name.get(tool_name)
+            if tool_obj is None:
+                result = f"Tool '{tool_name}' is not available."
+            else:
+                try:
+                    result = tool_obj.invoke(tool_args)
+                except Exception as exc:
+                    result = f"Tool '{tool_name}' failed: {exc}"
+
+            tool_messages.append(
+                ToolMessage(content=str(result), name=tool_name, tool_call_id=tool_call_id)
+            )
+
+        if not tool_messages:
+            break
+
+        delta_messages.extend(tool_messages)
+        working_messages.extend(tool_messages)
+
+    if len(delta_messages) > 1:
+        app.update_state(config, {"messages": delta_messages})
 
 
 def get_chat_history(thread_id: str) -> list[dict]:

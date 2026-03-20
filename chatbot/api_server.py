@@ -7,7 +7,7 @@ from collections.abc import Iterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.sse import EventSourceResponse, ServerSentEvent
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -59,15 +59,27 @@ def chat(req: ChatRequest):
 
 import json
 
-@app.post("/api/chat/stream", response_class=EventSourceResponse)
-def chat_stream(req: ChatRequest) -> Iterator[ServerSentEvent]:
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest):
     """Stream the chatbot response token-by-token via SSE."""
-    try:
-        for token in get_response_stream(req.message, thread_id=req.thread_id):
-            yield ServerSentEvent(data=json.dumps({"token": token}), event="token")
-        yield ServerSentEvent(data=json.dumps({"token": ""}), event="done")
-    except Exception as e:
-        yield ServerSentEvent(data=json.dumps({"error": f"⚠️ Error: {str(e)}"}), event="error")
+    def generate():
+        try:
+            for token in get_response_stream(req.message, thread_id=req.thread_id):
+                yield f"data: {json.dumps({'token': token})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': f'⚠️ Error: {str(e)}'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Content-Encoding": "identity",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
 
 
 @app.get("/api/chat/{thread_id}")
