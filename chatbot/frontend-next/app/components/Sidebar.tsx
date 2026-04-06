@@ -11,6 +11,7 @@ import {
   PanelLeftClose,
   PanelLeft,
   Search,
+  FileText,
 } from "lucide-react";
 
 interface ChatHistory {
@@ -22,8 +23,11 @@ interface SidebarProps {
   chatHistory: ChatHistory[];
   threadId: string;
   onNewChat: () => void;
+  onUploadPdf: () => void;
   onLoadChat: (id: string) => void;
   onDeleteChat: (e: React.MouseEvent, id: string) => void;
+  ragStatusText: string;
+  isUploadingPdf: boolean;
   isOpen: boolean;
   onClose: () => void;
   onToggle: () => void;
@@ -33,13 +37,15 @@ export default function Sidebar({
   chatHistory,
   threadId,
   onNewChat,
+  onUploadPdf,
   onLoadChat,
   onDeleteChat,
+  ragStatusText,
+  isUploadingPdf,
   isOpen,
   onClose,
   onToggle,
 }: SidebarProps) {
-  // ── Escape key to close ──
   const handleEscape = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === "Escape" && isOpen) onClose();
@@ -54,7 +60,6 @@ export default function Sidebar({
 
   return (
     <div className="h-full flex shrink-0 relative z-20 mr-3">
-      {/* ═══════ COLLAPSED ICON RAIL (shown when sidebar is closed) ═══════ */}
       {!isOpen && (
         <div
           className={cn(
@@ -64,7 +69,6 @@ export default function Sidebar({
           )}
           style={{ width: "52px" }}
         >
-          {/* Expand sidebar */}
           <button
             onClick={onToggle}
             className={cn(
@@ -78,7 +82,6 @@ export default function Sidebar({
             <PanelLeft className="w-5 h-5" />
           </button>
 
-          {/* New Chat */}
           <button
             onClick={onNewChat}
             className={cn(
@@ -92,7 +95,6 @@ export default function Sidebar({
             <Plus className="w-5 h-5" />
           </button>
 
-          {/* Search (decorative for now) */}
           <button
             className={cn(
               "w-9 h-9 rounded-lg flex items-center justify-center",
@@ -105,7 +107,22 @@ export default function Sidebar({
             <Search className="w-5 h-5" />
           </button>
 
-          {/* Bottom: user avatar */}
+          <button
+            onClick={onUploadPdf}
+            className={cn(
+              "w-9 h-9 rounded-lg flex items-center justify-center",
+              "text-[#9f94b4] hover:text-white",
+              "hover:bg-white/[0.08]",
+              "transition-all duration-200",
+              
+              isUploadingPdf && "opacity-60 pointer-events-none"
+            )}
+            title={isUploadingPdf ? "Uploading PDF..." : "Add PDF"}
+            disabled={isUploadingPdf}
+          >
+            <FileText className="w-5 h-5" />
+          </button>
+
           <div className="mt-auto">
             <div
               className={cn(
@@ -119,7 +136,6 @@ export default function Sidebar({
         </div>
       )}
 
-      {/* ═══════ EXPANDED SIDEBAR PANEL ═══════ */}
       <aside
         className={cn(
           "group/sidebar h-full flex flex-col overflow-hidden",
@@ -129,11 +145,9 @@ export default function Sidebar({
         )}
         style={{ width: isOpen ? "260px" : "0px" }}
       >
-        {/* Inner content — stays 260px, gets clipped by parent overflow-hidden */}
         <div style={{ width: "260px", minWidth: "260px" }} className="h-full flex flex-col relative">
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(168,85,247,0.12),transparent_34%)]" />
 
-          {/* ── Header: Logo ── */}
           <div className="relative z-10 flex items-center gap-3 px-4 pt-5 pb-2">
             <div className="relative">
               <div className="flex h-9 w-9 items-center justify-center rounded-[12px] border border-[#7a52e7]/40 bg-gradient-to-br from-[#6f34e4] via-[#8d43f2] to-[#d245bb] shadow-[0_8px_26px_rgba(124,58,237,0.35)]">
@@ -148,7 +162,6 @@ export default function Sidebar({
                 Powered by LangGraph
               </p>
             </div>
-            {/* Collapse sidebar — subtle icon */}
             <button
               onClick={onToggle}
               className={cn(
@@ -164,34 +177,53 @@ export default function Sidebar({
             </button>
           </div>
 
-          {/* ── Divider ── */}
           <div
             className="relative z-10"
             style={{ borderBottom: "1px solid #2a2435", margin: "4px 16px 16px 16px" }}
           />
 
-          {/* ── New Chat Button ── */}
           <div className="relative z-10" style={{ padding: "0 14px 16px 14px" }}>
-            <button
-              onClick={() => {
-                onNewChat();
-              }}
-              className={cn(
-                "flex w-full items-center justify-center gap-2 rounded-[10px]",
-                "bg-gradient-to-r from-[#6528db] via-[#8a36ef] to-[#bb42f8]",
-                "text-[13px] font-semibold text-white",
-                "hover:brightness-110 hover:shadow-[0_8px_26px_rgba(124,58,237,0.38)]",
-                "active:scale-[0.98]",
-                "transition-all duration-200 ease-out"
-              )}
-              style={{ padding: "10px 14px" }}
-            >
-              <Plus className="w-4 h-4" />
-              New Chat
-            </button>
+            <div className="flex flex-col gap-3">
+              <button
+                onClick={() => {
+                  onNewChat();
+                }}
+                className={cn(
+                  "flex w-full items-center justify-center gap-2 rounded-[10px]",
+                  "bg-gradient-to-r from-[#6528db] via-[#8a36ef] to-[#bb42f8]",
+                  "text-[13px] font-semibold text-white",
+                  "hover:brightness-110 hover:shadow-[0_8px_26px_rgba(124,58,237,0.38)]",
+                  "active:scale-[0.98]",
+                  "transition-all duration-200 ease-out"
+                )}
+                style={{ padding: "10px 14px" }}
+              >
+                <Plus className="w-4 h-4" />
+                New Chat
+              </button>
+              <button
+                onClick={onUploadPdf}
+                disabled={isUploadingPdf}
+                className={cn(
+                  "flex w-full items-center justify-center gap-2 rounded-[10px]",
+                  "bg-gradient-to-r from-[#6528db] via-[#8a36ef] to-[#bb42f8]",
+                  "text-[13px] font-semibold text-white",
+                  "hover:brightness-110 hover:shadow-[0_8px_26px_rgba(124,58,237,0.38)]",
+                  "active:scale-[0.98]",
+                  "transition-all duration-200 ease-out",
+                  isUploadingPdf && "opacity-60 pointer-events-none"
+                )}
+                style={{ padding: "10px 14px" }}
+              >
+                <FileText className="w-4 h-4" />
+                {isUploadingPdf ? "Uploading PDF..." : "Add PDF"}
+              </button>
+            </div>
+            <p className="mt-2 px-1 text-[11px] leading-relaxed text-[#8d84a4]">
+              {ragStatusText}
+            </p>
           </div>
 
-          {/* ── Chat History ── */}
           <div className="relative z-10 flex-1 overflow-y-auto" style={{ padding: "0 10px" }}>
             {chatHistory.length > 0 && (
               <>
@@ -231,7 +263,6 @@ export default function Sidebar({
             )}
           </div>
 
-          {/* ── Bottom Profile Area ── */}
           <div className="relative z-10 mt-auto">
             <div className="border-t border-[#2b2338] bg-[#171327]/80" style={{ padding: "10px 12px" }}>
               <div className="flex items-center gap-2.5">

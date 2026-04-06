@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type ChangeEvent } from "react";
 import Sidebar from "./components/Sidebar";
 import Navbar from "./components/Navbar";
 import ChatArea from "./components/ChatArea";
@@ -10,6 +10,14 @@ import { type Message } from "./components/MessageBubble";
 interface ChatHistory {
   id: string;
   title: string;
+}
+
+interface RagStatusResponse {
+  status?: string;
+  message?: string;
+  file_name?: string | null;
+  chunks?: number;
+  pages?: number;
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -46,6 +54,9 @@ export default function Home() {
   const [threadId, setThreadId] = useState(() => generateId());
   const [chatHistory, setChatHistory] = useState<ChatHistory[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [ragMessage, setRagMessage] = useState("No PDF indexed yet.");
+  const [isUploadingPdf, setIsUploadingPdf] = useState(false);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   // AbortController ref for cancelling streams
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -67,7 +78,80 @@ export default function Home() {
         console.error("Failed to fetch chat history:", err);
       }
     }
+
+    async function fetchRagStatus() {
+      try {
+        const res = await fetch(`${API_URL}/api/rag/status`);
+        if (!res.ok) return;
+        const data: RagStatusResponse = await res.json();
+        if (data.status === "ready") {
+          const pages = data.pages ?? 0;
+          const chunks = data.chunks ?? 0;
+          setRagMessage(
+            `Indexed ${data.file_name ?? "PDF"} (${pages} pages, ${chunks} chunks).`
+          );
+        } else {
+          setRagMessage(data.message || "No PDF indexed yet.");
+        }
+      } catch (err) {
+        console.error("Failed to fetch RAG status:", err);
+      }
+    }
+
     fetchHistory();
+    fetchRagStatus();
+  }, []);
+
+  const uploadPdf = useCallback(async (file: File) => {
+    if (!file) return;
+    if (file.type && file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      setRagMessage("Please upload a PDF file.");
+      return;
+    }
+
+    setIsUploadingPdf(true);
+    setRagMessage(`Uploading ${file.name}...`);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch(`${API_URL}/api/rag/upload-pdf`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        const detail = typeof data?.detail === "string" ? data.detail : "Upload failed.";
+        setRagMessage(detail);
+        return;
+      }
+
+      const fileName = data.file_name || file.name;
+      const pages = Number(data.pages || 0);
+      const chunks = Number(data.chunks || 0);
+      setRagMessage(`Indexed ${fileName} (${pages} pages, ${chunks} chunks). Ask your question now.`);
+    } catch (err) {
+      console.error("PDF upload failed:", err);
+      setRagMessage("Could not upload PDF. Check API connectivity.");
+    } finally {
+      setIsUploadingPdf(false);
+    }
+  }, []);
+
+  const handlePdfInputChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) return;
+      await uploadPdf(file);
+    },
+    [uploadPdf]
+  );
+
+  const openPdfPicker = useCallback(() => {
+    pdfInputRef.current?.click();
   }, []);
 
   // ── Stop generation ──
@@ -336,13 +420,23 @@ export default function Home() {
   return (
     <div className="relative flex h-screen w-screen overflow-hidden bg-[var(--background)]">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(168,85,247,0.12),transparent_30%),radial-gradient(circle_at_center,rgba(124,58,237,0.06),transparent_45%)]" />
+      <input
+        ref={pdfInputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        className="hidden"
+        onChange={handlePdfInputChange}
+      />
       {/* Sidebar drawer — always rendered, slides in/out */}
       <Sidebar
         chatHistory={chatHistory}
         threadId={threadId}
         onNewChat={handleNewChat}
+        onUploadPdf={openPdfPicker}
         onLoadChat={loadChat}
         onDeleteChat={handleDeleteChat}
+        ragStatusText={ragMessage}
+        isUploadingPdf={isUploadingPdf}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onToggle={() => setSidebarOpen((prev) => !prev)}
