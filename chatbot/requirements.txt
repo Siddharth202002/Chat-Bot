@@ -1,0 +1,79 @@
+# ---------------------------------------------------------------------------
+# Chatbot backend requirements  (Python 3.12)
+#
+#   python -m venv myvenv
+#   myvenv\Scripts\activate          # Windows
+#   pip install -r requirements.txt
+#   python api_server.py             # serves on http://0.0.0.0:8000
+#
+# Versions below are pinned to the set currently working in ./myvenv.
+# ---------------------------------------------------------------------------
+
+# --- Web API layer (api_server.py) ---
+fastapi==0.135.1
+uvicorn==0.41.0
+starlette==0.52.1
+pydantic==2.12.5
+python-multipart==0.0.22        # required by FastAPI for PDF UploadFile
+sse-starlette==3.3.4            # streaming responses
+
+# --- LangGraph / LangChain core (chatbot_backend.py) ---
+langgraph==1.0.8
+langgraph-checkpoint==4.0.0
+langgraph-checkpoint-sqlite==3.0.3   # AsyncSqliteSaver -> chat_memory.db
+langgraph-prebuilt==1.0.7
+langgraph-sdk==0.3.6
+langchain==1.2.10
+langchain-core==1.2.19
+langchain-classic==1.0.3
+langchain-community==0.4.1      # FAISS, PyPDFLoader, HuggingFaceEmbeddings fallback
+langchain-text-splitters==1.1.1
+
+# --- LLM provider (ChatGroq: llama-3.3-70b-versatile) ---
+langchain-groq==1.1.2
+
+# --- MCP tools (spending-analyzer server) ---
+langchain-mcp-adapters==0.2.2
+mcp==1.26.0
+
+# --- RAG: PDF ingest + embeddings + vector store ---
+pypdf==6.9.2
+faiss-cpu==1.13.2
+sentence-transformers==5.3.0    # sentence-transformers/all-MiniLM-L6-v2
+transformers==5.5.0
+huggingface_hub==1.9.0
+torch==2.11.0                   # CPU build; see note at bottom for GPU
+scikit-learn==1.8.0
+numpy==2.4.2
+
+# --- Web search tool ---
+ddgs==9.11.4
+duckduckgo_search==8.1.1
+
+# --- Storage / HTTP / config ---
+aiosqlite==0.22.1               # async SQLite driver for the checkpointer
+requests==2.32.5                # Finnhub stock-quote tool
+httpx==0.28.1
+httpx-sse==0.4.3
+python-dotenv==1.2.1            # loads ../.env
+
+# --- Tracing (optional, driven by LANGSMITH_* vars in .env) ---
+langsmith==0.7.4
+
+# --- Optional: preferred modern embeddings wrapper --------------------------
+# The code tries `langchain_huggingface` first and silently falls back to
+# `langchain_community.embeddings`. Uncomment to use the non-deprecated path.
+# langchain-huggingface
+
+# --- Optional: alternate LLM provider (Gemini code is commented out) --------
+# langchain-google-genai==4.2.0
+
+# ---------------------------------------------------------------------------
+# Notes
+#  * torch: `pip install -r requirements.txt` pulls the CPU wheel. For CUDA,
+#    install torch separately first from https://pytorch.org before this file.
+#  * Required env vars in ../.env :  GROQ_API_KEY, FINNHUB_API_KEY
+#    Optional: LANGSMITH_TRACING, LANGSMITH_ENDPOINT, LANGSMITH_API_KEY,
+#              LANGSMITH_PROJECT
+#  * Frontend deps are separate:  cd frontend-next && npm install && npm run dev
+# ---------------------------------------------------------------------------
