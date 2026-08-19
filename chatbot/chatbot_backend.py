@@ -13,6 +13,7 @@ from typing import Annotated, Any, AsyncGenerator, TypedDict
 import aiosqlite
 import requests
 from dotenv import load_dotenv
+from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -55,7 +56,7 @@ def _get_llm() -> Any:
         from langchain_groq import ChatGroq
 
         _llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
+            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
             temperature=0,
         )
         return _llm
