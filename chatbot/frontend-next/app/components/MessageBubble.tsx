@@ -1,12 +1,12 @@
 "use client";
 
 import { cn } from "@/app/lib/utils";
-import { motion } from "framer-motion";
-import { Bot, Copy, Check, Code } from "lucide-react";
-import { useState, memo } from "react";
+import { Check, Copy, Sparkles } from "lucide-react";
+import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus, oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 export interface Message {
   id: string;
@@ -21,199 +21,216 @@ interface MessageBubbleProps {
   isStreaming?: boolean;
 }
 
-function CopyButton({ text }: { text: string }) {
+const LANGUAGE_LABELS: Record<string, string> = {
+  js: "JavaScript",
+  jsx: "JSX",
+  ts: "TypeScript",
+  tsx: "TSX",
+  javascript: "JavaScript",
+  typescript: "TypeScript",
+  py: "Python",
+  python: "Python",
+  sh: "Shell",
+  bash: "Bash",
+  css: "CSS",
+  html: "HTML",
+  json: "JSON",
+  sql: "SQL",
+  yaml: "YAML",
+};
+
+function labelFor(lang: string) {
+  return LANGUAGE_LABELS[lang] ?? lang.charAt(0).toUpperCase() + lang.slice(1);
+}
+
+/* ── Copy control, shared by code blocks and whole responses ────── */
+
+function CopyButton({
+  text,
+  label = "Copy",
+  className,
+}: {
+  text: string;
+  label?: string;
+  className?: string;
+}) {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(text);
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // Async Clipboard API is unavailable on insecure origins and in some
+      // embedded webviews — fall back so the button is never a silent no-op.
+      const scratch = document.createElement("textarea");
+      scratch.value = text;
+      scratch.setAttribute("readonly", "");
+      scratch.style.cssText = "position:fixed;top:-9999px;opacity:0";
+      document.body.appendChild(scratch);
+      scratch.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* Nothing left to try. */
+      }
+      scratch.remove();
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  };
+  }
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
+      aria-label={copied ? "Copied" : label}
+      title={copied ? "Copied" : label}
       className={cn(
-        "p-1.5 rounded-md",
-        "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
-        "hover:bg-white/10 transition-all duration-200"
+        "inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-micro font-medium",
+        "text-fg-subtle transition-colors duration-150 hover:bg-hover hover:text-fg",
+        className
       )}
-      title="Copy code"
     >
       {copied ? (
-        <Check className="w-3.5 h-3.5 text-emerald-400" />
+        <Check className="h-3.5 w-3.5 text-success" strokeWidth={2} />
       ) : (
-        <Copy className="w-3.5 h-3.5" />
+        <Copy className="h-3.5 w-3.5" strokeWidth={1.75} />
       )}
     </button>
   );
 }
 
+/* ── Markdown renderer ──────────────────────────────────────────── */
+
+// GitHub-Flavoured Markdown: tables, strikethrough, task lists, autolinks.
+// react-markdown is CommonMark-only without this, so model-authored tables
+// render as a run-on paragraph of pipes.
+const REMARK_PLUGINS = [remarkGfm];
+
+const markdownComponents = {
+  // Wide tables scroll inside their own box instead of stretching the message.
+  table({ children }: { children?: React.ReactNode }) {
+    return (
+      <div className="md-table-wrap">
+        <table>{children}</table>
+      </div>
+    );
+  },
+  code({ className, children, ...props }: { className?: string; children?: React.ReactNode }) {
+    const match = /language-(\w+)/.exec(className || "");
+    const codeString = String(children).replace(/\n$/, "");
+
+    if (!match) {
+      return <code {...props}>{children}</code>;
+    }
+
+    return (
+      <div className="my-4 overflow-hidden rounded-lg border border-line bg-[#12111a]">
+        <div className="flex items-center justify-between border-b border-line bg-hover/60 px-3 py-1.5">
+          <span className="text-micro font-medium tracking-wide text-fg-muted">
+            {labelFor(match[1])}
+          </span>
+          <CopyButton text={codeString} label="Copy code" />
+        </div>
+        <div className="overflow-x-auto">
+          <SyntaxHighlighter
+            style={vscDarkPlus}
+            language={match[1]}
+            PreTag="pre"
+            customStyle={{
+              margin: 0,
+              borderRadius: 0,
+              fontSize: "13px",
+              lineHeight: 1.65,
+              padding: "14px 16px",
+              background: "transparent",
+            }}
+            // vscDarkPlus paints its own slab on the <code> element, which shows
+            // through as a lighter box inside our container — flatten it.
+            codeTagProps={{
+              style: {
+                background: "transparent",
+                textShadow: "none",
+                fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)",
+              },
+            }}
+          >
+            {codeString}
+          </SyntaxHighlighter>
+        </div>
+      </div>
+    );
+  },
+};
+
+/* ── Message ────────────────────────────────────────────────────── */
+
 function MessageBubbleInner({ message, index, isStreaming = false }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const contentStr = String(message.content || "");
 
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{
-        duration: 0.3,
-        delay: index * 0.04,
-        ease: [0.4, 0, 0.2, 1],
-      }}
-      className={cn(
-        "flex w-full",
-        isUser ? "justify-end" : "justify-start"
-      )}
-    >
+  const time = message.timestamp.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  if (isUser) {
+    return (
       <div
-        className={cn(
-          "flex flex-col",
-          isUser ? "items-end" : "items-start",
-          "w-full max-w-2xl"
-        )}
+        className="animate-rise flex justify-end"
+        style={{ animationDelay: `${Math.min(index, 6) * 30}ms` }}
       >
-        {/* Avatar + Bubble row */}
-        <div
-          className={cn(
-            "flex items-start gap-2.5",
-            isUser ? "flex-row-reverse" : "flex-row"
-          )}
-        >
-          {/* Avatar — assistant only */}
-          {!isUser && (
-            <div className="shrink-0 mt-0.5">
-              <div
-                className={cn(
-                  "w-8 h-8 rounded-full flex items-center justify-center",
-                  "bg-gradient-to-br from-[var(--gradient-start)] to-[var(--gradient-end)]",
-                  "shadow-lg shadow-purple-500/20"
-                )}
-              >
-                <Bot className="w-4 h-4 text-white" />
-              </div>
-            </div>
-          )}
-
-          {/* Bubble */}
-          <div
-            className={cn(
-              "relative rounded-2xl message-bubble",
-              isUser
-                ? [
-                    "user-gradient text-white",
-                    "rounded-br-md",
-                    "shadow-lg shadow-purple-500/15",
-                  ]
-                : [
-                    "glass-card",
-                    "rounded-bl-md",
-                    "text-[var(--text-primary)]",
-                  ],
-              isStreaming && "is-streaming"
-            )}
-            style={{ padding: "14px 20px" }}
-          >
-            <div
-              className={cn(
-                "text-[14px] leading-relaxed",
-                "prose prose-invert prose-sm max-w-none",
-                "[&_p]:mb-2 [&_p:last-child]:mb-0",
-                "[&_ul]:ml-4 [&_ol]:ml-4",
-                "[&_li]:mb-1",
-                "[&_strong]:font-semibold",
-                "[&_a]:text-purple-400 [&_a]:underline [&_a:hover]:text-purple-300",
-                isUser && "[&_*]:text-white",
-                // Blinking cursor at end while streaming
-                isStreaming && !isUser && "streaming-cursor"
-              )}
-            >
-              {contentStr ? (
-                <ReactMarkdown
-                  components={{
-                    code({ className, children, ...props }) {
-                      const match = /language-(\w+)/.exec(className || "");
-                      const codeString = String(children).replace(/\n$/, "");
-
-                      if (match) {
-                        const lang = match[1];
-                        const langName = lang === "javascript" ? "JavaScript" : lang === "typescript" ? "TypeScript" : lang.charAt(0).toUpperCase() + lang.slice(1);
-
-                        return (
-                          <div className="my-4 rounded-[12px] overflow-hidden bg-[#1e1e1e] border border-white/5 shadow-md">
-                            <div className="flex items-center justify-between px-4 py-2 bg-[#2d2d2d]/80 border-b border-white/5">
-                              <div className="flex items-center gap-2 text-gray-300">
-                                <Code className="w-4 h-4" />
-                                <span className="text-[13px] font-medium font-sans">
-                                  {langName}
-                                </span>
-                              </div>
-                              <CopyButton text={codeString} />
-                            </div>
-                            <SyntaxHighlighter
-                              style={vscDarkPlus || oneDark}
-                              language={match[1]}
-                              PreTag="div"
-                              customStyle={{
-                                margin: 0,
-                                borderRadius: 0,
-                                fontSize: "14px",
-                                padding: "16px",
-                                background: "#1e1e1e",
-                              }}
-                            >
-                              {codeString}
-                            </SyntaxHighlighter>
-                          </div>
-                        );
-                      }
-                      return (
-                        <code
-                          className="px-1.5 py-0.5 rounded-md bg-white/10 text-purple-300 text-[13px] font-mono"
-                          {...props}
-                        >
-                          {children}
-                        </code>
-                      );
-                    },
-                  }}
-                >
-                  {contentStr}
-                </ReactMarkdown>
-              ) : (
-                <span className="text-[var(--text-muted)]">...</span>
-              )}
-            </div>
+        <div className="flex max-w-[85%] flex-col items-end sm:max-w-[75%]">
+          <div className="md md-on-user rounded-lg rounded-br-sm border border-accent-muted/40 bg-accent-subtle px-4 py-2.5 text-fg">
+            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
+              {contentStr}
+            </ReactMarkdown>
           </div>
+          <time className="mt-1 pr-1 text-micro text-fg-faint">{time}</time>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="animate-rise group flex gap-3"
+      style={{ animationDelay: `${Math.min(index, 6) * 30}ms` }}
+    >
+      <span
+        className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-accent-muted/50 bg-accent-subtle"
+        aria-hidden
+      >
+        <Sparkles className="h-3.5 w-3.5 text-accent-fg" strokeWidth={1.75} />
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <div
+          className={cn("md message-body", isStreaming && "streaming-cursor")}
+        >
+          {contentStr ? (
+            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
+              {contentStr}
+            </ReactMarkdown>
+          ) : null}
         </div>
 
-        {/* Timestamp — below the bubble, hidden while streaming */}
-        {!isStreaming && (
-          <p
-            className={cn(
-              "text-[10px] mt-1.5",
-              isUser ? "text-[#706a7e] mr-1" : "text-[#706a7e] ml-11"
-            )}
-          >
-            {message.timestamp.toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </p>
+        {/* Action row — revealed on hover, and always present for keyboard users */}
+        {!isStreaming && contentStr && (
+          <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+            <CopyButton text={contentStr} label="Copy response" />
+            <time className="text-micro text-fg-faint">{time}</time>
+          </div>
         )}
       </div>
-    </motion.div>
+    </div>
   );
 }
 
-// Memoize to prevent re-rendering non-streaming messages on each token
+// Skip re-rendering settled messages while tokens stream into the newest one.
 const MessageBubble = memo(MessageBubbleInner, (prev, next) => {
-  // Always re-render if streaming state changes
   if (prev.isStreaming !== next.isStreaming) return false;
-  // Always re-render the streaming message
   if (next.isStreaming) return false;
-  // Don't re-render completed messages
   return prev.message.content === next.message.content && prev.message.id === next.message.id;
 });
 

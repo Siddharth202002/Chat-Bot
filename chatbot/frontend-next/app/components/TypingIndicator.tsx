@@ -1,49 +1,26 @@
 "use client";
 
-import { cn } from "@/app/lib/utils";
-import { motion } from "framer-motion";
-import { Bot } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 export default function TypingIndicator() {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -10 }}
-      transition={{ duration: 0.3 }}
-      className="flex gap-3 w-full max-w-3xl mx-auto"
-    >
-      {/* Avatar */}
-      <div className="shrink-0 mt-1">
-        <div
-          className={cn(
-            "w-8 h-8 rounded-xl flex items-center justify-center",
-            "bg-gradient-to-br from-[var(--gradient-start)] to-[var(--gradient-end)]",
-            "shadow-lg shadow-purple-500/20"
-          )}
-        >
-          <Bot className="w-4 h-4 text-white" />
-        </div>
-      </div>
+    <div className="animate-fade-in flex gap-3" role="status" aria-label="Assistant is thinking">
+      <span
+        className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-accent-muted/50 bg-accent-subtle"
+        aria-hidden
+      >
+        <Sparkles className="h-3.5 w-3.5 text-accent-fg" strokeWidth={1.75} />
+      </span>
 
-      {/* Typing dots */}
-      <div className="glass-card rounded-2xl rounded-bl-md px-5 py-4">
-        <div className="flex items-end gap-1.5 h-[18px]">
-          {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              className={cn(
-                "block w-2.5 h-2.5 rounded-full",
-                "bg-gradient-to-br from-purple-400 to-pink-400",
-                "animate-typing-bounce",
-                i === 0 && "typing-dot-1",
-                i === 1 && "typing-dot-2",
-                i === 2 && "typing-dot-3"
-              )}
-            />
-          ))}
-        </div>
+      <div className="flex h-7 items-center gap-1.5" aria-hidden>
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="animate-typing-bounce block h-1.5 w-1.5 rounded-full bg-accent-fg"
+            style={{ animationDelay: `${i * 0.18}s` }}
+          />
+        ))}
       </div>
-    </motion.div>
+    </div>
   );
 }
