@@ -1,79 +1,150 @@
 @import "tailwindcss";
 
-/* ═══════════════════════════════════════
-   DESIGN TOKENS
-   ═══════════════════════════════════════ */
-:root {
-  --primary: #7C3AED;
-  --primary-light: #8B5CF6;
-  --primary-dark: #6D28D9;
-  --primary-glow: rgba(124, 58, 237, 0.4);
-  --primary-glow-strong: rgba(124, 58, 237, 0.6);
+/* ═══════════════════════════════════════════════════════════════
+   DESIGN TOKENS  —  Tailwind v4 CSS-first theme
+   Dark-first. Every token is semantic; no raw palette in components.
+   ═══════════════════════════════════════════════════════════════ */
+@theme {
+  /* ── Surfaces ── */
+  --color-canvas: #0b0b12;
+  --color-raised: #15141f;
+  --color-overlay: #1b1a28;
+  --color-hover: #221f31;
+  --color-active: #28243a;
 
-  --background: #0F0F1A;
-  --background-secondary: #13132B;
-  --surface: #1A1A2E;
-  --surface-elevated: #1E1E3A;
+  /* ── Borders ── */
+  --color-line-subtle: #211f2c;
+  --color-line: #2c2938;
+  --color-line-strong: #3a3550;
+  --color-focus: #7c5ce0;
 
-  --glass: rgba(255, 255, 255, 0.04);
-  --glass-hover: rgba(255, 255, 255, 0.08);
-  --glass-active: rgba(255, 255, 255, 0.12);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.15);
+  /* ── Foreground ──
+     Contrast vs canvas: fg 17.8:1 · fg-muted 9.6:1 · fg-subtle 5.6:1 (all AA+).
+     fg-faint (2.8:1) is for disabled affordances only, never readable copy. */
+  --color-fg: #f5f3f7;
+  --color-fg-muted: #b8b3c4;
+  --color-fg-subtle: #8b8698;
+  --color-fg-faint: #5c5768;
 
-  --text-primary: rgba(255, 255, 255, 0.95);
-  --text-secondary: rgba(255, 255, 255, 0.6);
-  --text-muted: rgba(255, 255, 255, 0.35);
+  /* ── Accent ── */
+  --color-accent-subtle: #241c3e;
+  --color-accent-muted: #4b3e8f;
+  --color-accent: #6d4fd1;
+  --color-accent-hi: #7c5ce0;
+  --color-accent-fg: #a78bfa;
 
-  --gradient-start: #7C3AED;
-  --gradient-mid: #A855F7;
-  --gradient-end: #EC4899;
+  /* ── Semantic ── */
+  --color-success: #34d399;
+  --color-success-subtle: #0f2a21;
+  --color-warning: #fbbf24;
+  --color-warning-subtle: #2e2410;
+  --color-danger: #f87171;
+  --color-danger-subtle: #2e1616;
+  --color-info: #60a5fa;
+  --color-info-subtle: #142235;
 
-  --sidebar-width: 240px;
+  /* ── Radii ── */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+
+  /* ── Elevation (dark UIs lean on borders and depth, not heavy drop shadows) ── */
+  --shadow-e1: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-e2: 0 4px 12px rgb(0 0 0 / 0.45);
+  --shadow-e3: 0 12px 32px rgb(0 0 0 / 0.55);
+  --shadow-focus: 0 0 0 1px var(--color-focus), 0 0 24px rgb(109 79 209 / 0.22);
+
+  /* ── Type scale (7 steps) ── */
+  --text-display: 2.625rem;
+  --text-display--line-height: 1.08;
+  --text-display--letter-spacing: -0.03em;
+  --text-display--font-weight: 700;
+
+  --text-h1: 1.5rem;
+  --text-h1--line-height: 1.25;
+  --text-h1--letter-spacing: -0.02em;
+  --text-h1--font-weight: 600;
+
+  --text-h2: 1.0625rem;
+  --text-h2--line-height: 1.35;
+  --text-h2--letter-spacing: -0.01em;
+  --text-h2--font-weight: 600;
+
+  --text-body-lg: 0.9375rem;
+  --text-body-lg--line-height: 1.6;
+
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.65;
+
+  --text-small: 0.8125rem;
+  --text-small--line-height: 1.4;
+
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1.35;
+  --text-micro--letter-spacing: 0.02em;
+
+  /* ── Motion ── */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ── Layout ── */
+  --sidebar-rail: 56px;
+  --sidebar-width: 272px;
 }
 
-/* ═══════════════════════════════════════
-   BASE STYLES
-   ═══════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   BASE
+   ═══════════════════════════════════════════════════════════════ */
+@layer base {
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  min-width: 0;
 }
 
 html,
 body {
   height: 100%;
   overflow: hidden;
-  background: var(--background);
-  color: var(--text-primary);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-fg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Animated gradient background */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background:
-    radial-gradient(circle at 50% 26%, rgba(124, 58, 237, 0.14), transparent 24%),
-    radial-gradient(circle at 18% 18%, rgba(124, 58, 237, 0.08), transparent 28%),
-    radial-gradient(circle at 82% 82%, rgba(168, 85, 247, 0.05), transparent 30%);
-  pointer-events: none;
-  z-index: 0;
-  animation: gradient-shift 18s ease-in-out infinite alternate;
+body {
+  font-size: var(--text-body);
+  line-height: 1.65;
 }
 
 ::selection {
-  background: rgba(124, 58, 237, 0.3);
-  color: white;
+  background: var(--color-accent-muted);
+  color: #fff;
 }
 
-/* ═══════════════════════════════════════
+/* One global focus ring — never `outline-none` without this replacement. */
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+button,
+[role="button"] {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    SCROLLBAR
-   ═══════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════ */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -81,38 +152,30 @@ body::before {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
+  background: var(--color-line-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--color-active);
+  background-clip: content-box;
 }
 
-/* ═══════════════════════════════════════
-   KEYFRAME ANIMATIONS
-   ═══════════════════════════════════════ */
-@keyframes gradient-shift {
-  0% {
-    opacity: 0.8;
-    transform: scale(1) rotate(0deg);
-  }
-
-  50% {
-    opacity: 1;
-    transform: scale(1.05) rotate(1deg);
-  }
-
-  100% {
-    opacity: 0.8;
-    transform: scale(1) rotate(-1deg);
-  }
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
 }
 
-@keyframes fadeSlideUp {
+/* ═══════════════════════════════════════════════════════════════
+   ANIMATIONS  (deliberately small — see reduced-motion below)
+   ═══════════════════════════════════════════════════════════════ */
+@keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(8px);
   }
 
   to {
@@ -121,15 +184,37 @@ body::before {
   }
 }
 
-@keyframes fadeSlideIn {
+@keyframes fade-in {
   from {
     opacity: 0;
-    transform: translateX(-12px);
   }
 
   to {
     opacity: 1;
-    transform: translateX(0);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -139,172 +224,310 @@ body::before {
   60%,
   100% {
     transform: translateY(0);
-    opacity: 0.4;
+    opacity: 0.35;
   }
 
   30% {
-    transform: translateY(-8px);
+    transform: translateY(-5px);
     opacity: 1;
   }
 }
 
-@keyframes pulse-glow {
+@keyframes blink-cursor {
 
   0%,
-  100% {
-    box-shadow: 0 0 15px var(--primary-glow), 0 0 30px rgba(124, 58, 237, 0.15);
-  }
-
   50% {
-    box-shadow: 0 0 25px var(--primary-glow-strong), 0 0 50px rgba(124, 58, 237, 0.25);
-  }
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: -200% center;
+    opacity: 1;
   }
 
+  51%,
   100% {
-    background-position: 200% center;
+    opacity: 0;
   }
 }
 
-@keyframes float {
-
-  0%,
-  100% {
-    transform: translateY(0px);
-  }
-
-  50% {
-    transform: translateY(-6px);
-  }
-}
-
-@keyframes spin-slow {
+@keyframes skeleton-sweep {
   from {
-    transform: rotate(0deg);
+    transform: translateX(-100%);
   }
 
   to {
-    transform: rotate(360deg);
+    transform: translateX(100%);
   }
 }
 
-/* ═══════════════════════════════════════
-   UTILITY CLASSES
-   ═══════════════════════════════════════ */
-.animate-fade-slide-up {
-  animation: fadeSlideUp 0.5s ease-out both;
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%) scaleX(0.4);
+  }
+
+  50% {
+    transform: translateX(0%) scaleX(0.6);
+  }
+
+  100% {
+    transform: translateX(100%) scaleX(0.4);
+  }
 }
 
-.animate-fade-slide-in {
-  animation: fadeSlideIn 0.3s ease-out both;
+@layer components {
+.animate-rise {
+  animation: rise 0.32s var(--ease-out-soft) both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s var(--ease-standard) both;
+}
+
+.animate-toast-in {
+  animation: toast-in 0.22s var(--ease-out-soft) both;
+}
+
+.animate-dialog-in {
+  animation: dialog-in 0.18s var(--ease-out-soft) both;
 }
 
 .animate-typing-bounce {
-  animation: typing-bounce 1.4s ease-in-out infinite;
+  animation: typing-bounce 1.3s ease-in-out infinite;
 }
 
-.animate-pulse-glow {
-  animation: pulse-glow 2s ease-in-out infinite;
+/* ═══════════════════════════════════════════════════════════════
+   SKELETON / PROGRESS
+   ═══════════════════════════════════════════════════════════════ */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-hover);
+  border-radius: var(--radius-sm);
 }
 
-.animate-shimmer {
-  background-size: 200% auto;
-  animation: shimmer 3s linear infinite;
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
+  animation: skeleton-sweep 1.6s ease-in-out infinite;
 }
 
-.animate-float {
-  animation: float 3s ease-in-out infinite;
+.progress-indeterminate {
+  position: relative;
+  overflow: hidden;
 }
 
-.animate-spin-slow {
-  animation: spin-slow 8s linear infinite;
+.progress-indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--color-accent);
+  animation: indeterminate 1.4s ease-in-out infinite;
 }
 
-/* Staggered delays for typing dots */
-.typing-dot-1 {
-  animation-delay: 0s;
-}
-
-.typing-dot-2 {
-  animation-delay: 0.2s;
-}
-
-.typing-dot-3 {
-  animation-delay: 0.4s;
-}
-
-/* Glass card base */
-.glass-card {
-  background: var(--glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-
-.glass-card-hover {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.glass-card-hover:hover {
-  background: var(--glass-hover);
-  border-color: var(--border-hover);
-}
-
-/* Purple gradient background for user messages */
-.user-gradient {
-  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-mid));
-}
-
-/* Glow effect on focus */
-.glow-on-focus:focus-within {
-  box-shadow: 0 0 0 2px var(--primary-glow), 0 0 20px rgba(124, 58, 237, 0.15);
-  border-color: var(--primary) !important;
-}
-
-/* Sidebar chat item active state */
-.sidebar-active {
-  background: var(--glass-active) !important;
-  border-color: rgba(124, 58, 237, 0.3) !important;
-}
-
-/* ═══════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════
    STREAMING CURSOR
-   ═══════════════════════════════════════ */
-@keyframes blink-cursor {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
+   ═══════════════════════════════════════════════════════════════ */
+/* Caret rides inside the last block so it sits at the end of the text,
+   not orphaned on a line of its own below it. */
+.streaming-cursor > *:last-child::after,
+.streaming-cursor:empty::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--color-accent-fg);
+  border-radius: 1px;
+  animation: blink-cursor 1s step-end infinite;
 }
 
-.streaming-cursor::after {
-  content: "▍";
-  display: inline;
-  color: #a78bfa;
-  animation: blink-cursor 0.8s step-end infinite;
-  font-weight: 300;
-  margin-left: 1px;
-}
-
-/* GPU optimization for message bubbles during streaming */
-.message-bubble {
+/* Contain layout thrash while tokens stream in */
+.message-body {
   contain: content;
-  will-change: auto;
 }
 
-.message-bubble.is-streaming {
-  will-change: contents;
+/* ═══════════════════════════════════════════════════════════════
+   MARKDOWN  (@tailwindcss/typography is not installed — styled here)
+   ═══════════════════════════════════════════════════════════════ */
+.md {
+  font-size: var(--text-body);
+  line-height: 1.72;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
-/* Stop generating button */
-@keyframes pulse-border {
-  0%, 100% { border-color: rgba(124, 58, 237, 0.3); }
-  50% { border-color: rgba(124, 58, 237, 0.6); }
+.md > *:first-child {
+  margin-top: 0;
 }
 
-.stop-generating-btn {
-  animation: pulse-border 2s ease-in-out infinite;
+.md > *:last-child {
+  margin-bottom: 0;
+}
+
+.md p {
+  margin: 0 0 0.85em;
+}
+
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  margin: 1.5em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+
+.md h1 {
+  font-size: 1.35em;
+}
+
+.md h2 {
+  font-size: 1.2em;
+}
+
+.md h3 {
+  font-size: 1.07em;
+}
+
+.md h4 {
+  font-size: 1em;
+}
+
+.md ul,
+.md ol {
+  margin: 0 0 0.85em;
+  padding-left: 1.35em;
+}
+
+.md ul {
+  list-style: disc;
+}
+
+.md ol {
+  list-style: decimal;
+}
+
+.md li {
+  margin-bottom: 0.3em;
+}
+
+/* GFM task lists: drop the bullet so the checkbox is the only marker. */
+.md li.task-list-item,
+.md li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -1.15em;
+}
+
+.md input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--color-accent);
+  vertical-align: -0.1em;
+}
+
+.md li::marker {
+  color: var(--color-fg-subtle);
+}
+
+.md li > ul,
+.md li > ol {
+  margin-top: 0.3em;
+  margin-bottom: 0.3em;
+}
+
+.md strong {
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.md em {
+  font-style: italic;
+}
+
+.md a {
+  color: var(--color-accent-fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.md a:hover {
+  color: #c4b5fd;
+}
+
+.md blockquote {
+  margin: 0 0 0.85em;
+  padding: 0.15em 0 0.15em 1em;
+  border-left: 2px solid var(--color-accent-muted);
+  color: var(--color-fg-muted);
+}
+
+.md hr {
+  margin: 1.5em 0;
+  border: 0;
+  border-top: 1px solid var(--color-line);
+}
+
+/* The wrapper owns the scrolling so the table itself can lay out at its
+   natural width instead of cramming every column into the message column. */
+.md-table-wrap {
+  margin: 0 0 1em;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.md table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-small);
+}
+
+.md th,
+.md td {
+  padding: 0.5em 0.8em;
+  border: 1px solid var(--color-line);
+  text-align: left;
+}
+
+.md th {
+  background: var(--color-hover);
+  font-weight: 600;
+}
+
+.md :not(pre) > code:not([class*="language-"]) {
+  padding: 0.15em 0.4em;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-subtle);
+  border: 1px solid var(--color-line);
+  color: var(--color-accent-fg);
+  font-size: 0.875em;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+}
+
+.md img {
+  max-width: 100%;
+  border-radius: var(--radius-md);
+}
+
+/* User turns sit on an accent-tinted surface — keep links legible there */
+.md-on-user a,
+.md-on-user :not(pre) > code:not([class*="language-"]) {
+  color: #ddd6fe;
+}
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   REDUCED MOTION
+   ═══════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
