@@ -4,6 +4,7 @@ Exposes POST /api/chat, POST /api/chat/stream, and GET /api/health.
 """
 
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
@@ -36,11 +37,20 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         await close_backend()
 
 
-app = FastAPI(title="Gemini Chatbot API", lifespan=lifespan)
+app = FastAPI(title="Zeno AI Chatbot API", lifespan=lifespan)
+
+# Browsers block cross-origin reads, so the deployed frontend's origin must be
+# listed here. Comma-separated, e.g. CORS_ALLOW_ORIGINS="https://chat.example.com".
+# Defaults to local development only.
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000").split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
