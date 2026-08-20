@@ -34,9 +34,14 @@ except ImportError as exc:
 else:
     MCP_IMPORT_ERROR = None
 
-# Load .env from the langraph root directory
-_env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(_env_path)
+# .env may sit at the repo root (local checkout) or next to this module (the
+# layout on the deployed server). Load whichever exists; python-dotenv does not
+# override variables already in the environment, so systemd's EnvironmentFile
+# still wins.
+_module_dir = Path(__file__).resolve().parent
+for _env_path in (_module_dir.parent / ".env", _module_dir / ".env"):
+    if _env_path.is_file():
+        load_dotenv(_env_path)
 
 
 # --- LLM Setup ---
@@ -70,12 +75,6 @@ def _get_llm_with_tools() -> Any:
     if _llm_with_tools is None:
         _llm_with_tools = _get_llm().bind_tools(tools)
     return _llm_with_tools
-
-# llm = ChatGoogleGenerativeAI(
-#     model="gemini-2.5-flash",
-#     api_key=os.getenv("gemini-api-key"),
-#     temperature=0.7
-# )
 
 # embedding model (initialized lazily to avoid startup crashes if dependency is missing)
 _embeddings: Any | None = None
@@ -266,19 +265,27 @@ async def initialize_default_rag_pdf() -> None:
         print(f"Failed to auto-index default PDF '{_default_pdf_path.name}': {exc}")
 
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
-MCP_SERVER_CONFIG: dict[str, dict[str, str | list[str]]] = {
-    "spending-analyzer": {
+# Windows treats environment variable names case-insensitively, Linux does not,
+# so a lowercase `finnhub_api_key` in .env works locally and silently resolves
+# to None on the server. Accept either spelling.
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY") or os.getenv("finnhub_api_key")
+# The spending-analyzer MCP server lives outside this repo, so its location is
+# per-machine configuration rather than a hardcoded path -- the absolute Windows
+# paths that used to be here made the service unusable on the Linux host.
+#   MCP_SPENDING_ANALYZER_SCRIPT - absolute path to the MCP server's main.py
+#   MCP_UV_COMMAND               - uv executable (defaults to `uv` on PATH)
+# With no script configured the server is skipped and the chatbot runs on its
+# base tools.
+_MCP_SCRIPT = os.getenv("MCP_SPENDING_ANALYZER_SCRIPT", "").strip()
+_MCP_COMMAND = os.getenv("MCP_UV_COMMAND", "uv").strip() or "uv"
+
+MCP_SERVER_CONFIG: dict[str, dict[str, str | list[str]]] = {}
+if _MCP_SCRIPT:
+    MCP_SERVER_CONFIG["spending-analyzer"] = {
         "transport": "stdio",
-        "command": "C:\\Users\\SiddharthMehendiratt\\.local\\bin\\uv.exe",
-        "args": [
-            "run",
-            "--with",
-            "fastmcp",
-            "D:\\OneDrive - tripgain.com\\Desktop\\finance tracking mcp\\main.py",
-        ],
+        "command": _MCP_COMMAND,
+        "args": ["run", "--with", "fastmcp", _MCP_SCRIPT],
     }
-}
 
 
 # --- Tools ---
@@ -426,6 +433,15 @@ async def _initialize_mcp_client() -> None:
         if _mcp_initialized:
             return
         _mcp_initialized = True
+
+        if not MCP_SERVER_CONFIG:
+            _mcp_status_message = (
+                "spending-analyzer MCP server is not configured. "
+                "Set MCP_SPENDING_ANALYZER_SCRIPT (and MCP_UV_COMMAND if uv is "
+                "not on PATH) to enable its tools."
+            )
+            print(_mcp_status_message)
+            return
 
         if MultiServerMCPClient is None:
             _mcp_status_message = (
