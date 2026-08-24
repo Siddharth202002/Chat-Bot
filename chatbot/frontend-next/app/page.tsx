@@ -259,6 +259,10 @@ export default function Home() {
   const sendMessage = useCallback(
     async (text: string) => {
       if (!text.trim() || isLoading) return;
+      if (rag.status === "uploading") {
+        toast("info", "Wait for the PDF to finish indexing, then send your question.");
+        return;
+      }
 
       // Cancel any existing stream
       if (abortControllerRef.current) {
@@ -431,7 +435,7 @@ export default function Home() {
         }
       }
     },
-    [isLoading, isStreaming, threadId, toast]
+    [isLoading, isStreaming, rag.status, threadId, toast]
   );
 
   const retryFailed = useCallback(() => {
@@ -613,7 +617,12 @@ export default function Home() {
           textareaRef={composerRef}
         />
 
-        {isWelcome && <SuggestionGrid onSelect={sendMessage} disabled={isLoading} />}
+        {isWelcome && (
+          <SuggestionGrid
+            onSelect={sendMessage}
+            disabled={isLoading || rag.status === "uploading"}
+          />
+        )}
       </main>
 
       <ConfirmDialog
