@@ -49,7 +49,7 @@ export default function Composer({
   const [isDragging, setIsDragging] = useState(false);
   const dragDepth = useRef(0);
 
-  const canSend = input.trim().length > 0 && !isLoading;
+  const canSend = input.trim().length > 0 && !isLoading && !isUploadingPdf;
 
   // Auto-grow the textarea up to a cap, then scroll internally.
   useEffect(() => {
@@ -203,7 +203,9 @@ export default function Composer({
         </div>
 
         <p className="mt-2 text-center text-micro text-fg-subtle">
-          {isLoading ? (
+          {isUploadingPdf ? (
+            <>Indexing PDF. You can send your question when it finishes.</>
+          ) : isLoading ? (
             <>Press Enter after the reply finishes to send your next message.</>
           ) : (
             <>Zeno AI can make mistakes. Verify important information.</>

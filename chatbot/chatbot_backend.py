@@ -520,6 +520,29 @@ def _messages_for_model(messages: list[BaseMessage]) -> list[BaseMessage]:
             )
         ),
     ]
+    if _rag_status.get("status") == "ready":
+        system_messages.append(
+            SystemMessage(
+                content=(
+                    "A PDF is already indexed and available through the rag_search tool. "
+                    f"Indexed PDF: {_rag_status.get('file_name') or 'Document'} "
+                    f"({_rag_status.get('pages') or 0} pages, "
+                    f"{_rag_status.get('chunks') or 0} chunks). "
+                    "When the user asks about the PDF, the uploaded document, this document, "
+                    "or asks to summarize it, call rag_search first and answer from the "
+                    "retrieved context. Do not ask the user to upload the PDF again."
+                )
+            )
+        )
+    elif _rag_status.get("status") == "empty":
+        system_messages.append(
+            SystemMessage(
+                content=(
+                    "No PDF is currently indexed. If the user asks about an uploaded PDF, "
+                    "ask them to upload a PDF first."
+                )
+            )
+        )
     if _mcp_status_message is not None:
         system_messages.append(
             SystemMessage(
