@@ -47,10 +47,11 @@ python-dotenv==1.2.1            # loads ../.env
 #
 # Notes
 #  1. Required env vars in ../.env :  GROQ_API_KEY, FINNHUB_API_KEY, GROQ_MODEL,
-#                                      JINA_API_KEY
+#                                      JINA_API_KEY, JWT_SECRET_KEY
 #     Optional: LANGSMITH_TRACING, LANGSMITH_ENDPOINT, LANGSMITH_API_KEY,
 #               LANGSMITH_PROJECT, JINA_EMBEDDINGS_MODEL,
-#               JINA_EMBEDDINGS_BATCH_SIZE, JINA_EMBEDDINGS_TIMEOUT
+#               JINA_EMBEDDINGS_BATCH_SIZE, JINA_EMBEDDINGS_TIMEOUT,
+#               JWT_EXP_SECONDS, AUTH_COOKIE_SECURE
 #  2. LINUX SERVER GOTCHA: .env spells the Finnhub key `finnhub_api_key` but
 #     the code reads os.getenv("FINNHUB_API_KEY"). Windows env vars are
 #     case-insensitive so it works locally; on Linux it resolves to None and
