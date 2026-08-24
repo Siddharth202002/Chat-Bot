@@ -10,8 +10,8 @@
 # langsmith, numpy, mcp, groq, starlette, aiohttp, sqlalchemy, ...) is pulled
 # in automatically by pip and must NOT be listed here.
 #
-# Installed size: ~150 MB.  See the RAG section at the bottom before adding
-# PDF support - it costs another ~850 MB.
+# Installed size stays modest because RAG embeddings use Jina's API instead of
+# downloading a local sentence-transformers model.
 # ---------------------------------------------------------------------------
 
 # --- Web API (api_server.py) ---
@@ -32,19 +32,25 @@ langchain-groq==1.1.2
 # --- Tools ---
 langchain-community==0.4.1      # DuckDuckGoSearchRun (see note 2 below)
 ddgs==9.11.4                    # DuckDuckGo search backend
-requests==2.32.5                # Finnhub stock-quote tool
+requests==2.32.5                # Finnhub stock-quote tool + Jina embeddings API
 langchain-mcp-adapters==0.2.2   # spending-analyzer MCP server
 mcp==1.26.0                     # PIN REQUIRED: adapters 0.2.2 breaks on mcp>=2.0
                                 #   (ImportError: RequestContext from mcp.shared.context)
+
+# --- RAG PDF indexing ---
+pypdf==6.9.2                    # PyPDFLoader PDF parser
+faiss-cpu==1.13.2               # local vector index; embeddings come from Jina API
 
 # --- Config ---
 python-dotenv==1.2.1            # loads ../.env
 
 #
 # Notes
-#  1. Required env vars in ../.env :  GROQ_API_KEY, FINNHUB_API_KEY, GROQ_MODEL
+#  1. Required env vars in ../.env :  GROQ_API_KEY, FINNHUB_API_KEY, GROQ_MODEL,
+#                                      JINA_API_KEY
 #     Optional: LANGSMITH_TRACING, LANGSMITH_ENDPOINT, LANGSMITH_API_KEY,
-#               LANGSMITH_PROJECT
+#               LANGSMITH_PROJECT, JINA_EMBEDDINGS_MODEL,
+#               JINA_EMBEDDINGS_BATCH_SIZE, JINA_EMBEDDINGS_TIMEOUT
 #  2. LINUX SERVER GOTCHA: .env spells the Finnhub key `finnhub_api_key` but
 #     the code reads os.getenv("FINNHUB_API_KEY"). Windows env vars are
 #     case-insensitive so it works locally; on Linux it resolves to None and

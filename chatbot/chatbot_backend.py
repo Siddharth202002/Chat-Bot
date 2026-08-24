@@ -22,6 +22,7 @@ from langchain_core.messages import (
     ToolMessage,
     message_chunk_to_message,
 )
+from langchain_core.embeddings import Embeddings
 from langchain_core.tools import tool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph, add_messages
@@ -76,7 +77,8 @@ def _get_llm_with_tools() -> Any:
         _llm_with_tools = _get_llm().bind_tools(tools)
     return _llm_with_tools
 
-# embedding model (initialized lazily to avoid startup crashes if dependency is missing)
+# Embeddings are initialized lazily so a missing API key does not crash startup
+# until RAG is actually used.
 _embeddings: Any | None = None
 _embedding_init_error: str | None = None
 
@@ -96,12 +98,82 @@ _upload_dir.mkdir(parents=True, exist_ok=True)
 _default_pdf_path = Path(__file__).resolve().parent / "data.pdf"
 
 
-def _get_embedding_class() -> Any:
-    try:
-        from langchain_huggingface import HuggingFaceEmbeddings
-    except ImportError:
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-    return HuggingFaceEmbeddings
+class JinaEmbeddings(Embeddings):
+    """LangChain-compatible embeddings client for Jina's embeddings API."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "jina-embeddings-v3",
+        endpoint: str = "https://api.jina.ai/v1/embeddings",
+        batch_size: int = 32,
+        timeout: float = 30.0,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.endpoint = endpoint
+        self.batch_size = max(1, batch_size)
+        self.timeout = timeout
+
+    def _embed(self, texts: list[str], task: str) -> list[list[float]]:
+        embeddings: list[list[float]] = []
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start : start + self.batch_size]
+            payload = {
+                "model": self.model,
+                "input": batch,
+                "embedding_type": "float",
+                "normalized": True,
+                "task": task,
+                "truncate": True,
+            }
+            try:
+                response = requests.post(
+                    self.endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                response_data = response.json()
+            except requests.HTTPError as exc:
+                detail = exc.response.text[:500] if exc.response is not None else str(exc)
+                raise RuntimeError(
+                    f"Jina embeddings API request failed: {response.status_code} {detail}"
+                ) from exc
+            except requests.RequestException as exc:
+                raise RuntimeError(
+                    f"Jina embeddings API request failed: {exc}"
+                ) from exc
+            except ValueError as exc:
+                raise RuntimeError("Jina embeddings API returned invalid JSON.") from exc
+
+            data = response_data.get("data", [])
+            if len(data) != len(batch):
+                raise RuntimeError(
+                    "Jina embeddings API returned an unexpected number of embeddings."
+                )
+
+            ordered = sorted(data, key=lambda item: item.get("index", 0))
+            for item in ordered:
+                embedding = item.get("embedding")
+                if not isinstance(embedding, list):
+                    raise RuntimeError("Jina embeddings API returned an invalid embedding.")
+                embeddings.append(embedding)
+
+        return embeddings
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed(texts, task="retrieval.passage")
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([text], task="retrieval.query")[0]
 
 
 def _get_pdf_loader_class() -> Any:
@@ -133,15 +205,27 @@ def _get_embeddings() -> Any:
     if _embedding_init_error is not None:
         raise RuntimeError(_embedding_init_error)
     try:
-        HuggingFaceEmbeddings = _get_embedding_class()
-        _embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        api_key = os.getenv("JINA_API_KEY") or os.getenv("jina_api_key")
+        if not api_key:
+            raise RuntimeError("JINA_API_KEY is not configured.")
+
+        batch_size = int(os.getenv("JINA_EMBEDDINGS_BATCH_SIZE", "32"))
+        timeout = float(os.getenv("JINA_EMBEDDINGS_TIMEOUT", "30"))
+        _embeddings = JinaEmbeddings(
+            api_key=api_key,
+            model=os.getenv("JINA_EMBEDDINGS_MODEL", "jina-embeddings-v3"),
+            endpoint=os.getenv(
+                "JINA_EMBEDDINGS_ENDPOINT",
+                "https://api.jina.ai/v1/embeddings",
+            ),
+            batch_size=batch_size,
+            timeout=timeout,
         )
         return _embeddings
     except Exception as exc:
         _embedding_init_error = (
-            "Failed to initialize embedding model. Install sentence-transformers "
-            "and langchain-huggingface. Details: "
+            "Failed to initialize Jina embeddings. Set JINA_API_KEY and confirm "
+            "the Jina embeddings API is reachable. Details: "
             f"{exc}"
         )
         raise RuntimeError(_embedding_init_error) from exc
