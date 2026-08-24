@@ -9,18 +9,29 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from chatbot_backend import (
+    AuthError,
+    ForbiddenError,
+    JWT_COOKIE_NAME,
+    JWT_EXP_SECONDS,
+    UserExistsError,
+    UserRecord,
+    authenticate_user,
+    assert_thread_not_foreign,
     close_backend,
+    create_access_token,
+    create_user,
     delete_chat,
     get_all_chats,
     get_chat_history,
     get_mcp_status,
     get_rag_status,
+    get_user_from_token,
     get_response,
     get_response_stream,
     ingest_pdf,
@@ -66,18 +77,91 @@ class ChatResponse(BaseModel):
     response: str
 
 
+class AuthRequest(BaseModel):
+    email: str
+    password: str
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    secure_cookie = os.getenv("AUTH_COOKIE_SECURE", "false").lower() == "true"
+    response.set_cookie(
+        key=JWT_COOKIE_NAME,
+        value=token,
+        max_age=JWT_EXP_SECONDS,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="lax",
+        path="/",
+    )
+
+
+async def current_user(
+    zeno_session: str | None = Cookie(default=None, alias=JWT_COOKIE_NAME),
+) -> UserRecord:
+    try:
+        return await get_user_from_token(zeno_session)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     return {"status": "ok", "mcp": get_mcp_status()}
 
 
+@app.post("/api/auth/register")
+async def register(req: AuthRequest, response: Response) -> dict[str, Any]:
+    try:
+        user = await create_user(req.email, req.password)
+    except UserExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _set_session_cookie(response, create_access_token(user))
+    return {"user": user}
+
+
+@app.post("/api/auth/login")
+async def login(req: AuthRequest, response: Response) -> dict[str, Any]:
+    try:
+        user = await authenticate_user(req.email, req.password)
+    except (AuthError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    _set_session_cookie(response, create_access_token(user))
+    return {"user": user}
+
+
+@app.post("/api/auth/logout")
+async def logout(response: Response) -> dict[str, str]:
+    response.delete_cookie(key=JWT_COOKIE_NAME, path="/")
+    return {"status": "ok"}
+
+
+@app.get("/api/auth/me")
+async def me(user: UserRecord = Depends(current_user)) -> dict[str, Any]:
+    return {"user": user}
+
+
 @app.get("/api/rag/status")
-async def rag_status() -> dict[str, Any]:
-    return get_rag_status()
+async def rag_status(
+    thread_id: str,
+    user: UserRecord = Depends(current_user),
+) -> dict[str, Any]:
+    try:
+        await assert_thread_not_foreign(user["id"], thread_id)
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return get_rag_status(user["id"], thread_id)
 
 
 @app.post("/api/rag/upload-pdf")
-async def rag_upload_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
+async def rag_upload_pdf(
+    file: UploadFile = File(...),
+    thread_id: str = Form(...),
+    user: UserRecord = Depends(current_user),
+) -> dict[str, Any]:
     filename = file.filename or "uploaded.pdf"
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only .pdf files are supported.")
@@ -87,9 +171,11 @@ async def rag_upload_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Uploaded PDF is empty.")
 
     try:
-        result = await ingest_pdf(contents, filename)
+        result = await ingest_pdf(contents, filename, user["id"], thread_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to index PDF: {exc}") from exc
 
@@ -97,31 +183,40 @@ async def rag_upload_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
 
 
 @app.get("/api/chats")
-async def get_chats() -> dict[str, Any]:
+async def get_chats(user: UserRecord = Depends(current_user)) -> dict[str, Any]:
     """Fetch a list of all chat threads from the database."""
     try:
-        chats = await get_all_chats()
+        chats = await get_all_chats(user["id"])
         return {"chats": chats}
     except Exception as e:
         return {"error": str(e)}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest) -> ChatResponse:
+async def chat(req: ChatRequest, user: UserRecord = Depends(current_user)) -> ChatResponse:
     try:
-        reply = await get_response(req.message, thread_id=req.thread_id)
+        reply = await get_response(req.message, thread_id=req.thread_id, user_id=user["id"])
         return ChatResponse(response=reply)
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except Exception as e:
         return ChatResponse(response=f"Error: {str(e)}")
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(req: ChatRequest) -> StreamingResponse:
+async def chat_stream(
+    req: ChatRequest,
+    user: UserRecord = Depends(current_user),
+) -> StreamingResponse:
     """Stream the chatbot response token-by-token via SSE."""
 
     async def generate():
         try:
-            async for token in get_response_stream(req.message, thread_id=req.thread_id):
+            async for token in get_response_stream(
+                req.message,
+                thread_id=req.thread_id,
+                user_id=user["id"],
+            ):
                 yield f"data: {json.dumps({'token': token})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
@@ -140,23 +235,33 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
 
 @app.get("/api/chat/{thread_id}")
-async def get_chat(thread_id: str) -> dict[str, Any]:
+async def get_chat(
+    thread_id: str,
+    user: UserRecord = Depends(current_user),
+) -> dict[str, Any]:
     """Fetch chat history for a given thread_id."""
     try:
-        history = await get_chat_history(thread_id)
+        history = await get_chat_history(thread_id, user["id"])
         return {"history": history}
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except Exception as e:
         return {"error": str(e)}
 
 
 @app.delete("/api/chat/{thread_id}")
-async def remove_chat(thread_id: str) -> dict[str, Any]:
+async def remove_chat(
+    thread_id: str,
+    user: UserRecord = Depends(current_user),
+) -> dict[str, Any]:
     """Delete a chat thread and all its messages."""
     try:
-        success = await delete_chat(thread_id)
+        success = await delete_chat(thread_id, user["id"])
         if success:
             return {"status": "ok"}
         return {"error": "Failed to delete chat"}
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except Exception as e:
         return {"error": str(e)}
 

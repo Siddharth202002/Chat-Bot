@@ -4,10 +4,17 @@ LangGraph chatbot using Groq with SQLite-backed memory.
 """
 
 import asyncio
+import base64
+import contextvars
+import hashlib
+import hmac
+import json
 import os
 import re
+import secrets
 from datetime import datetime
 from pathlib import Path
+from time import time
 from typing import Annotated, Any, AsyncGenerator, TypedDict
 
 import aiosqlite
@@ -83,9 +90,27 @@ _embeddings: Any | None = None
 _embedding_init_error: str | None = None
 
 _rag_lock = asyncio.Lock()
-_rag_vectorstore: Any | None = None
-_rag_retriever: Any | None = None
-_rag_status: dict[str, Any] = {
+_active_user_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "active_user_id", default=None
+)
+_active_thread_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "active_thread_id", default=None
+)
+
+
+def _empty_rag_status() -> dict[str, Any]:
+    return {
+        "status": "empty",
+        "message": "No PDF indexed. Upload a PDF to enable RAG answers.",
+        "file_name": None,
+        "chunks": 0,
+        "pages": 0,
+        "uploaded_at": None,
+    }
+
+
+_rag_states: dict[tuple[str, str], dict[str, Any]] = {}
+_default_rag_status: dict[str, Any] = {
     "status": "empty",
     "message": "No PDF indexed. Upload a PDF to enable RAG answers.",
     "file_name": None,
@@ -96,6 +121,288 @@ _rag_status: dict[str, Any] = {
 _upload_dir = Path(__file__).resolve().parent / "uploaded_pdfs"
 _upload_dir.mkdir(parents=True, exist_ok=True)
 _default_pdf_path = Path(__file__).resolve().parent / "data.pdf"
+_db_path = Path(__file__).resolve().parent / "chat_memory.db"
+
+JWT_COOKIE_NAME = "zeno_session"
+JWT_ALGORITHM = "HS256"
+JWT_EXP_SECONDS = int(os.getenv("JWT_EXP_SECONDS", str(60 * 60 * 24)))
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY") or "dev-only-change-me"
+_password_iterations = 210_000
+_email_pattern = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class AuthError(Exception):
+    """Raised when authentication or authorization fails."""
+
+
+class UserExistsError(Exception):
+    """Raised when registering an email that already exists."""
+
+
+class ForbiddenError(Exception):
+    """Raised when a user attempts to access another user's resource."""
+
+
+class UserRecord(TypedDict):
+    id: str
+    email: str
+
+
+def _utc_now() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _sanitize_storage_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", value).strip("._")
+    return safe or "unknown"
+
+
+def _normalize_email(email: str) -> str:
+    normalized = email.strip().lower()
+    if not _email_pattern.match(normalized):
+        raise ValueError("Enter a valid email address.")
+    return normalized
+
+
+def _hash_password(password: str) -> str:
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        _password_iterations,
+    )
+    return (
+        f"pbkdf2_sha256${_password_iterations}$"
+        f"{base64.urlsafe_b64encode(salt).decode('ascii')}$"
+        f"{base64.urlsafe_b64encode(digest).decode('ascii')}"
+    )
+
+
+def _verify_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, iterations_str, salt_b64, digest_b64 = password_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        salt = base64.urlsafe_b64decode(salt_b64.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_b64.encode("ascii"))
+        actual = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            int(iterations_str),
+        )
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def create_access_token(user: UserRecord) -> str:
+    issued_at = int(time())
+    payload = {
+        "sub": user["id"],
+        "email": user["email"],
+        "iat": issued_at,
+        "exp": issued_at + JWT_EXP_SECONDS,
+        "type": "access",
+    }
+    header = {"alg": JWT_ALGORITHM, "typ": "JWT"}
+    signing_input = ".".join(
+        [
+            _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8")),
+            _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
+        ]
+    )
+    signature = hmac.new(
+        JWT_SECRET_KEY.encode("utf-8"),
+        signing_input.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return f"{signing_input}.{_b64url_encode(signature)}"
+
+
+async def get_user_from_token(token: str | None) -> UserRecord:
+    if not token:
+        raise AuthError("Authentication required.")
+    try:
+        header_b64, payload_b64, signature_b64 = token.split(".", 2)
+        signing_input = f"{header_b64}.{payload_b64}"
+        expected_signature = hmac.new(
+            JWT_SECRET_KEY.encode("utf-8"),
+            signing_input.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        actual_signature = _b64url_decode(signature_b64)
+        if not hmac.compare_digest(actual_signature, expected_signature):
+            raise AuthError("Invalid session.")
+
+        header = json.loads(_b64url_decode(header_b64))
+        payload = json.loads(_b64url_decode(payload_b64))
+        if header.get("alg") != JWT_ALGORITHM or payload.get("type") != "access":
+            raise AuthError("Invalid session.")
+        if int(payload.get("exp", 0)) < int(time()):
+            raise AuthError("Session expired.")
+        user_id = str(payload.get("sub") or "")
+        if not user_id:
+            raise AuthError("Invalid session.")
+    except AuthError:
+        raise
+    except Exception as exc:
+        raise AuthError("Invalid session.") from exc
+
+    await _get_compiled_app()
+    if _async_conn is None:
+        raise AuthError("Authentication storage is unavailable.")
+    async with _async_conn.execute(
+        "SELECT id, email FROM users WHERE id = ?",
+        (user_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        raise AuthError("User no longer exists.")
+    return {"id": str(row[0]), "email": str(row[1])}
+
+
+async def _ensure_app_tables() -> None:
+    await _get_compiled_app()
+    if _async_conn is None:
+        raise RuntimeError("Database connection is unavailable.")
+    await _async_conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    await _async_conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_threads (
+            thread_id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    await _async_conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_threads_user_updated "
+        "ON chat_threads(user_id, updated_at)"
+    )
+    await _async_conn.commit()
+
+
+async def create_user(email: str, password: str) -> UserRecord:
+    normalized_email = _normalize_email(email)
+    password_hash = _hash_password(password)
+    user: UserRecord = {"id": secrets.token_urlsafe(16), "email": normalized_email}
+    await _ensure_app_tables()
+    if _async_conn is None:
+        raise RuntimeError("Database connection is unavailable.")
+    try:
+        await _async_conn.execute(
+            "INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (user["id"], user["email"], password_hash, _utc_now()),
+        )
+        await _async_conn.commit()
+    except aiosqlite.IntegrityError as exc:
+        raise UserExistsError("An account with this email already exists.") from exc
+    return user
+
+
+async def authenticate_user(email: str, password: str) -> UserRecord:
+    normalized_email = _normalize_email(email)
+    await _ensure_app_tables()
+    if _async_conn is None:
+        raise RuntimeError("Database connection is unavailable.")
+    async with _async_conn.execute(
+        "SELECT id, email, password_hash FROM users WHERE email = ?",
+        (normalized_email,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None or not _verify_password(password, str(row[2])):
+        raise AuthError("Invalid email or password.")
+    return {"id": str(row[0]), "email": str(row[1])}
+
+
+async def ensure_thread_owner(
+    user_id: str,
+    thread_id: str,
+    title_seed: str | None = None,
+) -> None:
+    if not thread_id.strip():
+        raise ValueError("thread_id is required.")
+    await _ensure_app_tables()
+    if _async_conn is None:
+        raise RuntimeError("Database connection is unavailable.")
+    async with _async_conn.execute(
+        "SELECT user_id FROM chat_threads WHERE thread_id = ?",
+        (thread_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is not None:
+        if str(row[0]) != user_id:
+            raise ForbiddenError("You do not have access to this chat.")
+        await _async_conn.execute(
+            "UPDATE chat_threads SET updated_at = ? WHERE thread_id = ?",
+            (_utc_now(), thread_id),
+        )
+        await _async_conn.commit()
+        return
+
+    title = (title_seed or "New Chat").strip() or "New Chat"
+    if len(title) > 36:
+        title = title[:36] + "..."
+    now = _utc_now()
+    await _async_conn.execute(
+        """
+        INSERT INTO chat_threads (thread_id, user_id, title, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (thread_id, user_id, title, now, now),
+    )
+    await _async_conn.commit()
+
+
+async def assert_thread_owner(user_id: str, thread_id: str) -> None:
+    await _ensure_app_tables()
+    if _async_conn is None:
+        raise RuntimeError("Database connection is unavailable.")
+    async with _async_conn.execute(
+        "SELECT 1 FROM chat_threads WHERE thread_id = ? AND user_id = ?",
+        (thread_id, user_id),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        raise ForbiddenError("You do not have access to this chat.")
+
+
+async def assert_thread_not_foreign(user_id: str, thread_id: str) -> None:
+    await _ensure_app_tables()
+    if _async_conn is None:
+        raise RuntimeError("Database connection is unavailable.")
+    async with _async_conn.execute(
+        "SELECT user_id FROM chat_threads WHERE thread_id = ?",
+        (thread_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is not None and str(row[0]) != user_id:
+        raise ForbiddenError("You do not have access to this chat.")
 
 
 class JinaEmbeddings(Embeddings):
@@ -276,8 +583,8 @@ def _safe_unlink(path_str: str | None) -> None:
         pass
 
 
-def _cleanup_uploaded_pdfs(keep_path: Path | None = None) -> None:
-    for pdf_file in _upload_dir.glob("*.pdf"):
+def _cleanup_uploaded_pdfs(upload_dir: Path, keep_path: Path | None = None) -> None:
+    for pdf_file in upload_dir.glob("*.pdf"):
         if keep_path is not None and pdf_file == keep_path:
             continue
         try:
@@ -286,17 +593,24 @@ def _cleanup_uploaded_pdfs(keep_path: Path | None = None) -> None:
             pass
 
 
-async def ingest_pdf(pdf_bytes: bytes, original_filename: str) -> dict[str, Any]:
+async def ingest_pdf(
+    pdf_bytes: bytes,
+    original_filename: str,
+    user_id: str,
+    thread_id: str,
+) -> dict[str, Any]:
     """
-    Save uploaded PDF, build a FAISS index, and keep only one active uploaded PDF.
+    Save uploaded PDF, build a FAISS index, and keep one active PDF per user/thread.
     """
-    global _rag_vectorstore, _rag_retriever, _rag_status
     if not pdf_bytes:
         raise ValueError("Uploaded file is empty.")
 
+    await ensure_thread_owner(user_id, thread_id)
     safe_name = _sanitize_filename(original_filename)
     stamped_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{safe_name}"
-    pdf_path = _upload_dir / stamped_name
+    thread_upload_dir = _upload_dir / _sanitize_storage_part(user_id) / _sanitize_storage_part(thread_id)
+    thread_upload_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = thread_upload_dir / stamped_name
     pdf_path.write_bytes(pdf_bytes)
 
     try:
@@ -311,10 +625,10 @@ async def ingest_pdf(pdf_bytes: bytes, original_filename: str) -> dict[str, Any]
         raise
 
     async with _rag_lock:
-        previous_path = str(_rag_status.get("stored_path") or "")
-        _rag_vectorstore = vectorstore
-        _rag_retriever = retriever
-        _rag_status = {
+        rag_key = (user_id, thread_id)
+        previous_state = _rag_states.get(rag_key, {})
+        previous_path = str(previous_state.get("stored_path") or "")
+        _rag_states[rag_key] = {
             "status": "ready",
             "message": "PDF indexed successfully. Previous uploaded PDF was replaced.",
             "file_name": safe_name,
@@ -322,17 +636,28 @@ async def ingest_pdf(pdf_bytes: bytes, original_filename: str) -> dict[str, Any]
             "pages": pages,
             "uploaded_at": datetime.utcnow().isoformat() + "Z",
             "stored_path": str(pdf_path),
+            "vectorstore": vectorstore,
+            "retriever": retriever,
         }
 
     if previous_path and Path(previous_path) != pdf_path:
         _safe_unlink(previous_path)
-    _cleanup_uploaded_pdfs(keep_path=pdf_path)
-    return dict(_rag_status)
+    _cleanup_uploaded_pdfs(thread_upload_dir, keep_path=pdf_path)
+    return get_rag_status(user_id, thread_id)
 
 
-def get_rag_status() -> dict[str, Any]:
+def get_rag_status(user_id: str | None = None, thread_id: str | None = None) -> dict[str, Any]:
     """Return current RAG indexing status."""
-    return dict(_rag_status)
+    if user_id is None or thread_id is None:
+        return dict(_default_rag_status)
+    state = _rag_states.get((user_id, thread_id))
+    if not state:
+        return _empty_rag_status()
+    return {
+        key: value
+        for key, value in state.items()
+        if key not in {"vectorstore", "retriever", "stored_path"}
+    }
 
 
 async def initialize_default_rag_pdf() -> None:
@@ -341,10 +666,24 @@ async def initialize_default_rag_pdf() -> None:
     """
     if not _default_pdf_path.exists():
         return
-    if _rag_status.get("status") == "ready":
+    if _default_rag_status.get("status") == "ready":
         return
     try:
-        await ingest_pdf(_default_pdf_path.read_bytes(), _default_pdf_path.name)
+        vectorstore, retriever, pages, chunks = await asyncio.to_thread(
+            _build_pdf_retriever, _default_pdf_path
+        )
+        _default_rag_status.update(
+            {
+                "status": "ready",
+                "message": "Default PDF indexed successfully.",
+                "file_name": _default_pdf_path.name,
+                "chunks": chunks,
+                "pages": pages,
+                "uploaded_at": datetime.utcnow().isoformat() + "Z",
+                "vectorstore": vectorstore,
+                "retriever": retriever,
+            }
+        )
     except Exception as exc:
         print(f"Failed to auto-index default PDF '{_default_pdf_path.name}': {exc}")
 
@@ -395,7 +734,18 @@ def rag_search(query: str) -> str:
     if not query.strip():
         return "Please provide a question to search in the uploaded PDF."
 
-    retriever = _rag_retriever
+    user_id = _active_user_id.get()
+    thread_id = _active_thread_id.get()
+    state = _rag_states.get((user_id, thread_id)) if user_id and thread_id else None
+    if (
+        state is None
+        and not user_id
+        and not thread_id
+        and _default_rag_status.get("status") == "ready"
+    ):
+        state = _default_rag_status
+
+    retriever = state.get("retriever") if state else None
     if retriever is None:
         return (
             "No PDF is indexed yet. Upload a PDF first using the frontend upload button "
@@ -520,21 +870,24 @@ def _messages_for_model(messages: list[BaseMessage]) -> list[BaseMessage]:
             )
         ),
     ]
-    if _rag_status.get("status") == "ready":
+    user_id = _active_user_id.get()
+    thread_id = _active_thread_id.get()
+    rag_status = get_rag_status(user_id, thread_id) if user_id and thread_id else _default_rag_status
+    if rag_status.get("status") == "ready":
         system_messages.append(
             SystemMessage(
                 content=(
                     "A PDF is already indexed and available through the rag_search tool. "
-                    f"Indexed PDF: {_rag_status.get('file_name') or 'Document'} "
-                    f"({_rag_status.get('pages') or 0} pages, "
-                    f"{_rag_status.get('chunks') or 0} chunks). "
+                    f"Indexed PDF: {rag_status.get('file_name') or 'Document'} "
+                    f"({rag_status.get('pages') or 0} pages, "
+                    f"{rag_status.get('chunks') or 0} chunks). "
                     "When the user asks about the PDF, the uploaded document, this document, "
                     "or asks to summarize it, call rag_search first and answer from the "
                     "retrieved context. Do not ask the user to upload the PDF again."
                 )
             )
         )
-    elif _rag_status.get("status") == "empty":
+    elif rag_status.get("status") == "empty":
         system_messages.append(
             SystemMessage(
                 content=(
@@ -697,9 +1050,6 @@ def route_tools(state: Chat_State) -> str:
     return END
 
 
-# --- Graph ---
-_db_path = Path(__file__).resolve().parent / "chat_memory.db"
-
 graph = StateGraph(Chat_State)
 graph.add_node("chat", chat)
 graph.add_node("tools", tool_node)
@@ -741,6 +1091,7 @@ async def initialize_backend() -> None:
     await initialize_default_rag_pdf()
     await _initialize_mcp_client()
     await _get_compiled_app()
+    await _ensure_app_tables()
 
 
 async def close_backend() -> None:
@@ -754,33 +1105,58 @@ async def close_backend() -> None:
     _compiled_app = None
 
 
-async def get_response(user_input: str, thread_id: str = "1") -> str:
+async def get_response(user_input: str, thread_id: str = "1", user_id: str = "") -> str:
     """Send a user message to the chatbot and return the AI response."""
+    await ensure_thread_owner(user_id, thread_id, title_seed=user_input)
     config = {
         "configurable": {"thread_id": thread_id},
-        "metadata": {"thread_id": thread_id},
+        "metadata": {"thread_id": thread_id, "user_id": user_id},
         "run_name": "chat_turn",
     }
     compiled_app = await _get_compiled_app()
-    response = await compiled_app.ainvoke(
-        {"messages": [HumanMessage(content=user_input)]},
-        config=config,
-    )
-    return response["messages"][-1].content
+    user_token = _active_user_id.set(user_id)
+    thread_token = _active_thread_id.set(thread_id)
+    try:
+        response = await compiled_app.ainvoke(
+            {"messages": [HumanMessage(content=user_input)]},
+            config=config,
+        )
+        return response["messages"][-1].content
+    finally:
+        _active_thread_id.reset(thread_token)
+        _active_user_id.reset(user_token)
 
 
 async def get_response_stream(
-    user_input: str, thread_id: str = "1"
+    user_input: str, thread_id: str = "1", user_id: str = ""
 ) -> AsyncGenerator[str, None]:
     """
     Stream the chatbot response incrementally.
     """
+    await ensure_thread_owner(user_id, thread_id, title_seed=user_input)
     config = {
         "configurable": {"thread_id": thread_id},
-        "metadata": {"thread_id": thread_id},
+        "metadata": {"thread_id": thread_id, "user_id": user_id},
         "run_name": "chat_turn",
     }
     compiled_app = await _get_compiled_app()
+    user_token = _active_user_id.set(user_id)
+    thread_token = _active_thread_id.set(thread_id)
+    try:
+        async for token in _get_response_stream_for_config(
+            compiled_app, config, user_input
+        ):
+            yield token
+    finally:
+        _active_thread_id.reset(thread_token)
+        _active_user_id.reset(user_token)
+
+
+async def _get_response_stream_for_config(
+    compiled_app: Any,
+    config: dict[str, Any],
+    user_input: str,
+) -> AsyncGenerator[str, None]:
     state = await compiled_app.aget_state(config)
     prior_messages: list[BaseMessage] = []
     if state and hasattr(state, "values"):
@@ -851,11 +1227,12 @@ async def get_response_stream(
         )
 
 
-async def get_chat_history(thread_id: str) -> list[dict[str, str]]:
+async def get_chat_history(thread_id: str, user_id: str) -> list[dict[str, str]]:
     """
     Retrieve the chat history for a given thread ID from the checkpointer.
     Returns a list of dictionaries with 'role' and 'content'.
     """
+    await assert_thread_owner(user_id, thread_id)
     config = {"configurable": {"thread_id": thread_id}}
     try:
         compiled_app = await _get_compiled_app()
@@ -882,28 +1259,29 @@ async def get_chat_history(thread_id: str) -> list[dict[str, str]]:
         return []
 
 
-async def _fetch_thread_ids_async() -> list[str]:
+async def _fetch_thread_ids_async(user_id: str) -> list[str]:
     await _get_compiled_app()
     if _async_conn is None:
         return []
     async with _async_conn.execute(
-        "SELECT DISTINCT thread_id FROM checkpoints ORDER BY rowid DESC"
+        "SELECT thread_id FROM chat_threads WHERE user_id = ? ORDER BY updated_at DESC",
+        (user_id,),
     ) as cursor:
         rows = await cursor.fetchall()
     return [thread_id for (thread_id,) in rows]
 
 
-async def get_all_chats() -> list[dict[str, str]]:
+async def get_all_chats(user_id: str) -> list[dict[str, str]]:
     """
     Retrieve all unique chat threads from the SQLite database.
     Returns a list of dictionaries with 'id' and 'title'.
     """
     try:
-        threads = await _fetch_thread_ids_async()
+        threads = await _fetch_thread_ids_async(user_id)
         chat_list: list[dict[str, str]] = []
 
         for thread_id in threads:
-            history = await get_chat_history(thread_id)
+            history = await get_chat_history(thread_id, user_id)
             if history:
                 first_msg = next(
                     (msg["content"] for msg in history if msg["role"] == "user"),
@@ -918,12 +1296,17 @@ async def get_all_chats() -> list[dict[str, str]]:
         return []
 
 
-async def _delete_chat_async(thread_id: str) -> bool:
+async def _delete_chat_async(thread_id: str, user_id: str) -> bool:
+    await assert_thread_owner(user_id, thread_id)
     try:
         await _get_compiled_app()
         if _async_conn is None:
             return False
 
+        await _async_conn.execute(
+            "DELETE FROM chat_threads WHERE thread_id = ? AND user_id = ?",
+            (thread_id, user_id),
+        )
         await _async_conn.execute(
             "DELETE FROM checkpoints WHERE thread_id = ?",
             (thread_id,),
@@ -938,15 +1321,16 @@ async def _delete_chat_async(thread_id: str) -> bool:
                 pass
 
         await _async_conn.commit()
+        _rag_states.pop((user_id, thread_id), None)
         return True
     except Exception as exc:
         print(f"Error deleting chat {thread_id}: {exc}")
         return False
 
 
-async def delete_chat(thread_id: str) -> bool:
+async def delete_chat(thread_id: str, user_id: str) -> bool:
     """Delete all checkpoints associated with a thread_id."""
-    return await _delete_chat_async(thread_id)
+    return await _delete_chat_async(thread_id, user_id)
 
 
 if __name__ == "__main__":

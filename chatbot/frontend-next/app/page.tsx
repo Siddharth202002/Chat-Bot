@@ -7,6 +7,7 @@ import { type Message } from "./components/MessageBubble";
 import Navbar from "./components/Navbar";
 import Sidebar, { type ChatSummary, type RagState } from "./components/Sidebar";
 import SuggestionGrid from "./components/SuggestionGrid";
+import Button from "./components/ui/Button";
 import ConfirmDialog from "./components/ui/ConfirmDialog";
 import { useToast } from "./components/ui/Toast";
 import { useIsDesktop } from "./lib/useMediaQuery";
@@ -17,6 +18,11 @@ interface RagStatusResponse {
   file_name?: string | null;
   chunks?: number;
   pages?: number;
+}
+
+interface AuthUser {
+  id: string;
+  email: string;
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -79,6 +85,12 @@ export default function Home() {
   const [pendingDelete, setPendingDelete] = useState<ChatSummary | null>(null);
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const [rag, setRag] = useState<RagState>(IDLE_RAG);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -92,13 +104,108 @@ export default function Home() {
   /** Set when the SSE stream reports an error mid-flight. */
   const streamErrorRef = useRef<string | null>(null);
 
+  const resetChatState = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    setMessages([]);
+    setInput("");
+    setIsLoading(false);
+    setIsStreaming(false);
+    setChatHistory([]);
+    setHistoryError(false);
+    setHistoryLoading(false);
+    setFailedMessage(null);
+    setPendingDelete(null);
+    setRag(IDLE_RAG);
+    setThreadId(generateId());
+  }, []);
+
+  const checkAuth = useCallback(async () => {
+    setIsCheckingAuth(true);
+    try {
+      const res = await fetch(`${API_URL}/api/auth/me`, {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        setCurrentUser(null);
+        resetChatState();
+        return;
+      }
+      const data = await res.json();
+      setCurrentUser(data.user ?? null);
+    } catch (err) {
+      console.error("Failed to check auth:", err);
+      setCurrentUser(null);
+      resetChatState();
+    } finally {
+      setIsCheckingAuth(false);
+    }
+  }, [resetChatState]);
+
+  const submitAuth = useCallback(async () => {
+    if (!authEmail.trim() || !authPassword) return;
+    setAuthLoading(true);
+    try {
+      const res = await fetch(`${API_URL}/api/auth/${authMode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: authEmail.trim(), password: authPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const detail = typeof data?.detail === "string" ? data.detail : "Authentication failed.";
+        toast("error", detail);
+        return;
+      }
+      setCurrentUser(data.user ?? null);
+      setAuthPassword("");
+      setThreadId(generateId());
+      toast("success", authMode === "login" ? "Signed in" : "Account created");
+    } catch (err) {
+      console.error("Authentication failed:", err);
+      toast("error", "Authentication failed. Check API connectivity.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }, [authEmail, authMode, authPassword, toast]);
+
+  const logout = useCallback(async () => {
+    try {
+      await fetch(`${API_URL}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch (err) {
+      console.error("Logout failed:", err);
+    } finally {
+      setCurrentUser(null);
+      resetChatState();
+      toast("info", "Signed out");
+    }
+  }, [resetChatState, toast]);
+
   /* ── Chat history ─────────────────────────────────────────────── */
 
   const fetchHistory = useCallback(async () => {
+    if (!currentUser) return;
     setHistoryLoading(true);
     setHistoryError(false);
     try {
-      const res = await fetch(`${API_URL}/api/chats`);
+      const res = await fetch(`${API_URL}/api/chats`, {
+        credentials: "include",
+      });
+      if (res.status === 401) {
+        setCurrentUser(null);
+        resetChatState();
+        return;
+      }
       const data = await res.json();
       if (data.chats) {
         setChatHistory(data.chats);
@@ -111,11 +218,20 @@ export default function Home() {
     } finally {
       setHistoryLoading(false);
     }
-  }, []);
+  }, [currentUser, resetChatState]);
 
   const fetchRagStatus = useCallback(async () => {
+    if (!currentUser) return;
     try {
-      const res = await fetch(`${API_URL}/api/rag/status`);
+      const res = await fetch(
+        `${API_URL}/api/rag/status?thread_id=${encodeURIComponent(threadId)}`,
+        { credentials: "include" }
+      );
+      if (res.status === 401) {
+        setCurrentUser(null);
+        resetChatState();
+        return;
+      }
       if (!res.ok) return;
       const data: RagStatusResponse = await res.json();
       if (data.status === "ready") {
@@ -132,12 +248,17 @@ export default function Home() {
     } catch (err) {
       console.error("Failed to fetch RAG status:", err);
     }
-  }, []);
+  }, [currentUser, resetChatState, threadId]);
 
   useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
+
+  useEffect(() => {
+    if (!currentUser) return;
     fetchHistory();
     fetchRagStatus();
-  }, [fetchHistory, fetchRagStatus]);
+  }, [currentUser, fetchHistory, fetchRagStatus]);
 
   /* ── Sidebar preference ───────────────────────────────────────── */
 
@@ -188,12 +309,21 @@ export default function Home() {
       try {
         const formData = new FormData();
         formData.append("file", file);
+        formData.append("thread_id", threadId);
 
         const res = await fetch(`${API_URL}/api/rag/upload-pdf`, {
           method: "POST",
           body: formData,
+          credentials: "include",
         });
         const data = await res.json();
+
+        if (res.status === 401) {
+          setCurrentUser(null);
+          resetChatState();
+          toast("error", "Please sign in again.");
+          return;
+        }
 
         if (!res.ok) {
           const detail = typeof data?.detail === "string" ? data.detail : "Upload failed.";
@@ -217,7 +347,7 @@ export default function Home() {
         toast("error", "Could not upload PDF. Check API connectivity.");
       }
     },
-    [toast]
+    [resetChatState, threadId, toast]
   );
 
   const handlePdfInputChange = useCallback(
@@ -292,10 +422,17 @@ export default function Home() {
         const res = await fetch(`${API_URL}/api/chat/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "include",
           body: JSON.stringify({ message: text.trim(), thread_id: threadId }),
           signal: controller.signal,
         });
 
+        if (res.status === 401) {
+          setCurrentUser(null);
+          resetChatState();
+          toast("error", "Please sign in again.");
+          return;
+        }
         if (!res.ok) throw new Error(`Streaming request failed with status ${res.status}`);
         if (!res.body) throw new Error("No response body");
 
@@ -435,7 +572,7 @@ export default function Home() {
         }
       }
     },
-    [isLoading, isStreaming, rag.status, threadId, toast]
+    [isLoading, isStreaming, rag.status, resetChatState, threadId, toast]
   );
 
   const retryFailed = useCallback(() => {
@@ -464,6 +601,7 @@ export default function Home() {
     if (messages.length > 0) rememberCurrentThread();
     setMessages([]);
     setFailedMessage(null);
+    setRag(IDLE_RAG);
     setThreadId(generateId());
     if (!isDesktop) closeSidebar();
     requestAnimationFrame(() => composerRef.current?.focus());
@@ -481,11 +619,21 @@ export default function Home() {
       setFailedMessage(null);
       setIsLoadingHistory(true);
       setMessages([]);
+      setRag(IDLE_RAG);
       setThreadId(id);
       if (!isDesktop) closeSidebar();
 
       try {
-        const res = await fetch(`${API_URL}/api/chat/${id}`);
+        const res = await fetch(`${API_URL}/api/chat/${id}`, {
+          credentials: "include",
+        });
+        if (res.status === 401) {
+          setCurrentUser(null);
+          resetChatState();
+          toast("error", "Please sign in again.");
+          return;
+        }
+        if (!res.ok) throw new Error(`Failed to load chat: ${res.status}`);
         const data = await res.json();
 
         if (data.history) {
@@ -506,7 +654,7 @@ export default function Home() {
         setIsLoadingHistory(false);
       }
     },
-    [closeSidebar, isDesktop, messages.length, rememberCurrentThread, stopGenerating, threadId, toast]
+    [closeSidebar, isDesktop, messages.length, rememberCurrentThread, resetChatState, stopGenerating, threadId, toast]
   );
 
   const confirmDelete = useCallback(async () => {
@@ -526,7 +674,16 @@ export default function Home() {
     }
 
     try {
-      const res = await fetch(`${API_URL}/api/chat/${chat.id}`, { method: "DELETE" });
+      const res = await fetch(`${API_URL}/api/chat/${chat.id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.status === 401) {
+        setCurrentUser(null);
+        resetChatState();
+        toast("error", "Please sign in again.");
+        return;
+      }
       const data = await res.json();
       if (data.status !== "ok") throw new Error(data.error || "Delete failed");
       toast("success", "Chat deleted");
@@ -539,7 +696,7 @@ export default function Home() {
       }
       toast("error", "Couldn't delete chat. Try again.");
     }
-  }, [chatHistory, messages, pendingDelete, stopGenerating, threadId, toast]);
+  }, [chatHistory, messages, pendingDelete, resetChatState, stopGenerating, threadId, toast]);
 
   /* ── Keyboard shortcuts ───────────────────────────────────────── */
 
@@ -560,6 +717,81 @@ export default function Home() {
   }, [toggleSidebar]);
 
   const isWelcome = messages.length === 0 && !isLoading && !isLoadingHistory;
+
+  if (isCheckingAuth) {
+    return (
+      <div className="flex h-dvh w-full items-center justify-center bg-canvas text-small text-fg-muted">
+        Checking session...
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <main className="flex min-h-dvh w-full items-center justify-center bg-canvas px-4">
+        <form
+          className="w-full max-w-sm rounded-lg border border-line bg-raised p-5 shadow-e2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitAuth();
+          }}
+        >
+          <div className="mb-5">
+            <h1 className="text-title-sm font-semibold text-fg">Zeno AI</h1>
+            <p className="mt-1 text-small text-fg-muted">
+              {authMode === "login" ? "Sign in to your chats." : "Create your account."}
+            </p>
+          </div>
+
+          <label className="mb-3 block">
+            <span className="mb-1 block text-small font-medium text-fg">Email</span>
+            <input
+              type="email"
+              value={authEmail}
+              onChange={(event) => setAuthEmail(event.target.value)}
+              autoComplete="email"
+              className="h-10 w-full rounded-md border border-line bg-canvas px-3 text-small text-fg outline-none focus:border-focus"
+              required
+            />
+          </label>
+
+          <label className="mb-4 block">
+            <span className="mb-1 block text-small font-medium text-fg">Password</span>
+            <input
+              type="password"
+              value={authPassword}
+              onChange={(event) => setAuthPassword(event.target.value)}
+              autoComplete={authMode === "login" ? "current-password" : "new-password"}
+              minLength={8}
+              className="h-10 w-full rounded-md border border-line bg-canvas px-3 text-small text-fg outline-none focus:border-focus"
+              required
+            />
+          </label>
+
+          <Button type="submit" variant="primary" block disabled={authLoading}>
+            {authLoading
+              ? "Please wait..."
+              : authMode === "login"
+                ? "Sign in"
+                : "Create account"}
+          </Button>
+
+          <button
+            type="button"
+            className="mt-4 w-full text-center text-small text-accent-fg hover:underline"
+            onClick={() => {
+              setAuthMode((prev) => (prev === "login" ? "register" : "login"));
+              setAuthPassword("");
+            }}
+          >
+            {authMode === "login"
+              ? "Need an account? Register"
+              : "Already have an account? Sign in"}
+          </button>
+        </form>
+      </main>
+    );
+  }
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-canvas">
@@ -592,7 +824,9 @@ export default function Home() {
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Navbar
           isGenerating={isLoading}
+          userEmail={currentUser.email}
           onToggleSidebar={toggleSidebar}
+          onLogout={logout}
         />
 
         <ChatArea
