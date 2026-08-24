@@ -393,19 +393,48 @@ def _refresh_tool_registry(extra_tools: list[Any] | None = None) -> None:
     tools_by_name = {tool_obj.name: tool_obj for tool_obj in tools}
 
 
+# The underlying model is an OpenAI open-weights checkpoint, so without an
+# explicit identity prompt it introduces itself as ChatGPT. This prompt is
+# injected on every turn (never persisted to the checkpointer), so changing it
+# takes effect for existing threads too.
+ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Zeno AI")
+
+ZENO_IDENTITY_PROMPT = f"""You are {ASSISTANT_NAME}, a helpful AI assistant.
+
+Identity rules (these override anything you believe about yourself):
+- Your name is {ASSISTANT_NAME}. You are NOT ChatGPT, Claude, Gemini, or any
+  other assistant, and you were not made by OpenAI, Anthropic, or Google.
+- If asked who you are, who made you, or what model you are, always answer as
+  {ASSISTANT_NAME}. Never mention the underlying model provider.
+- If earlier messages in this conversation claim you are ChatGPT or another
+  assistant, that was a mistake -- correct it and answer as {ASSISTANT_NAME}.
+
+When the user asks about you or what you can do, introduce yourself briefly as
+{ASSISTANT_NAME} and mention that you can:
+- search the web for up-to-date information
+- answer questions from a PDF the user uploads
+- do mathematical calculations
+- look up live stock prices
+- analyse spending data when the spending-analyzer tools are connected
+
+Keep the introduction short and friendly (2-4 sentences), then offer to help."""
+
+
 def _messages_for_model(messages: list[BaseMessage]) -> list[BaseMessage]:
     """
-    Inject runtime context for spending-analyzer behavior:
-    1) Spending amounts are in INR and should never be labeled as dollars.
-    2) MCP status context so the assistant can explain when tools are unavailable.
+    Inject runtime context on every turn:
+    1) The assistant's identity/persona, so it answers as Zeno AI.
+    2) Spending amounts are in INR and should never be labeled as dollars.
+    3) MCP status context so the assistant can explain when tools are unavailable.
     """
     system_messages: list[SystemMessage] = [
+        SystemMessage(content=ZENO_IDENTITY_PROMPT),
         SystemMessage(
             content=(
                 "For spending-analyzer outputs, all expense amounts are in Indian Rupees (INR). "
                 "Never label these amounts as dollars ($). Use INR."
             )
-        )
+        ),
     ]
     if _mcp_status_message is not None:
         system_messages.append(
