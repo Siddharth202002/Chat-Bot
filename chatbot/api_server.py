@@ -4,15 +4,29 @@ Exposes POST /api/chat, POST /api/chat/stream, and GET /api/health.
 """
 
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
 import uvicorn
-from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Cookie,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
+
+import memory_config
 
 from chatbot_backend import (
     AuthError,
@@ -27,6 +41,7 @@ from chatbot_backend import (
     create_access_token,
     create_user,
     delete_chat,
+    delete_user_memory,
     get_all_chats,
     get_chat_history,
     get_mcp_status,
@@ -36,7 +51,21 @@ from chatbot_backend import (
     get_response_stream,
     ingest_pdf,
     initialize_backend,
+    list_user_memories,
+    process_memory_turn,
+    update_user_memory,
 )
+
+
+# Memory extraction runs in a background task, so its logs are the only signal
+# an operator gets that it is (or is not) working. Without a handler on the
+# chatbot loggers, uvicorn shows request lines and nothing else -- a Mistral
+# outage would look exactly like a healthy server.
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)s [%(name)s] %(message)s",
+)
+logging.getLogger("chatbot").setLevel(os.getenv("MEMORY_LOG_LEVEL", "INFO").upper())
 
 
 @asynccontextmanager
@@ -80,6 +109,11 @@ class ChatResponse(BaseModel):
 class AuthRequest(BaseModel):
     email: str
     password: str
+
+
+class MemoryUpdateRequest(BaseModel):
+    content: str | None = Field(default=None, max_length=2000)
+    memory_type: str | None = Field(default=None, max_length=64)
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -193,14 +227,22 @@ async def get_chats(user: UserRecord = Depends(current_user)) -> dict[str, Any]:
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, user: UserRecord = Depends(current_user)) -> ChatResponse:
+async def chat(
+    req: ChatRequest,
+    background_tasks: BackgroundTasks,
+    user: UserRecord = Depends(current_user),
+) -> ChatResponse:
     try:
         reply = await get_response(req.message, thread_id=req.thread_id, user_id=user["id"])
-        return ChatResponse(response=reply)
     except ForbiddenError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     except Exception as e:
         return ChatResponse(response=f"Error: {str(e)}")
+
+    # Long-term memory extraction runs after the response is sent, so a slow or
+    # failing extraction call can never delay or break the reply.
+    background_tasks.add_task(process_memory_turn, user["id"], req.thread_id)
+    return ChatResponse(response=reply)
 
 
 @app.post("/api/chat/stream")
@@ -231,7 +273,58 @@ async def chat_stream(
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         },
+        # Starlette runs this once the stream is fully sent to the client.
+        background=BackgroundTask(process_memory_turn, user["id"], req.thread_id),
     )
+
+
+@app.get("/api/memories")
+async def get_memories(user: UserRecord = Depends(current_user)) -> dict[str, Any]:
+    """List the authenticated user's long-term memories."""
+    memories = await list_user_memories(user["id"])
+    return {"memories": memories}
+
+
+@app.patch("/api/memories/{memory_id}")
+async def patch_memory(
+    memory_id: str,
+    req: MemoryUpdateRequest,
+    user: UserRecord = Depends(current_user),
+) -> dict[str, Any]:
+    """Edit one of the authenticated user's memories."""
+    if req.content is None and req.memory_type is None:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
+    # The store truncates at MEMORY_MAX_CONTENT_CHARS; rejecting here is
+    # clearer than silently returning a clipped memory the client did not send.
+    max_chars = memory_config.max_content_chars()
+    if req.content is not None and len(req.content.strip()) > max_chars:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Memory content must be at most {max_chars} characters.",
+        )
+    try:
+        memory = await update_user_memory(
+            user["id"],
+            memory_id,
+            content=req.content,
+            memory_type=req.memory_type,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Memory not found.")
+    return {"memory": memory}
+
+
+@app.delete("/api/memories/{memory_id}")
+async def remove_memory(
+    memory_id: str,
+    user: UserRecord = Depends(current_user),
+) -> dict[str, str]:
+    """Delete one of the authenticated user's memories."""
+    if not await delete_user_memory(user["id"], memory_id):
+        raise HTTPException(status_code=404, detail="Memory not found.")
+    return {"status": "ok"}
 
 
 @app.get("/api/chat/{thread_id}")
