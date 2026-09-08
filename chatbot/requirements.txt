@@ -26,8 +26,15 @@ langgraph-checkpoint-sqlite==3.0.3   # AsyncSqliteSaver -> chat_memory.db
 langchain-core==1.2.19
 aiosqlite==0.22.1
 
-# --- LLM provider: ChatGroq, llama-3.3-70b-versatile ---
+# --- LLM providers ---------------------------------------------------------
+# Chat runs through an ordered fallback chain (LLM_PROVIDER_CHAIN). Groq is the
+# primary; Gemini and Cerebras take the turn when it rate-limits, which its free
+# tier does daily. Any provider whose API key is unset is skipped.
 langchain-groq==1.1.2
+langchain-google-genai==4.4.0
+# OpenRouter speaks the OpenAI wire protocol, so it needs no dedicated package
+# -- langchain-openai is pulled in already and ChatOpenAI just points at it.
+langchain-openai==1.6.0
 
 # --- Long-term memory: Mistral extractor + vector math ---
 # Mistral runs ONLY the memory extractor (memory_extraction.py), never the chat

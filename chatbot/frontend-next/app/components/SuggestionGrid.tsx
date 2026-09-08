@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/app/lib/utils";
-import { BookOpen, Bug, Code2, Lightbulb, PenLine, Sparkles } from "lucide-react";
+import { BookOpen, Bug, Code2, CloudSun, Lightbulb, PenLine } from "lucide-react";
 
 const SUGGESTIONS = [
   { icon: Code2, text: "Explain Python decorators" },
@@ -9,7 +9,7 @@ const SUGGESTIONS = [
   { icon: PenLine, text: "Write something creative" },
   { icon: BookOpen, text: "Summarise a concept" },
   { icon: Bug, text: "Debug my code" },
-  { icon: Sparkles, text: "Teach me something new" },
+  { icon: CloudSun, text: "What's the weather today?" },
 ];
 
 /**

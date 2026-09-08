@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import ChatArea from "./components/ChatArea";
 import Composer from "./components/Composer";
+import LocationStatus from "./components/LocationStatus";
 import { type Message } from "./components/MessageBubble";
 import Navbar from "./components/Navbar";
 import Sidebar, { type ChatSummary, type RagState } from "./components/Sidebar";
@@ -10,6 +11,8 @@ import SuggestionGrid from "./components/SuggestionGrid";
 import Button from "./components/ui/Button";
 import ConfirmDialog from "./components/ui/ConfirmDialog";
 import { useToast } from "./components/ui/Toast";
+import { useUserLocation } from "./hooks/useUserLocation";
+import { needsLocation } from "./lib/location";
 import { useIsDesktop } from "./lib/useMediaQuery";
 
 interface RagStatusResponse {
@@ -125,6 +128,28 @@ export default function Home() {
     setRag(IDLE_RAG);
     setThreadId(generateId());
   }, []);
+
+  /* ── User location (weather / "near me" requests) ─────────────── */
+
+  const handleLocationUnauthorized = useCallback(() => {
+    setCurrentUser(null);
+    resetChatState();
+  }, [resetChatState]);
+
+  const {
+    status: locationStatus,
+    location: userLocation,
+    message: locationMessage,
+    ensureLocation,
+    submitManualCity,
+    clearLocation,
+    dismissed: locationDismissed,
+    dismiss: dismissLocation,
+  } = useUserLocation({
+    enabled: Boolean(currentUser),
+    onUnauthorized: handleLocationUnauthorized,
+    onToast: toast,
+  });
 
   const checkAuth = useCallback(async () => {
     setIsCheckingAuth(true);
@@ -419,6 +444,18 @@ export default function Home() {
       accumulatedRef.current = "";
 
       try {
+        // Own-location questions ("what's the weather?", "anything near me?")
+        // need coordinates the backend cannot infer, so resolve them before the
+        // request goes out. The user's turn is already on screen and the
+        // LocationStatus strip above the composer explains the pause.
+        //
+        // A null result is deliberately NOT fatal: we still send the message and
+        // let the backend/LLM handle the missing location gracefully — it asks
+        // the user for a city. Aborting here would just swallow their message.
+        if (needsLocation(text)) {
+          await ensureLocation();
+        }
+
         const res = await fetch(`${API_URL}/api/chat/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -491,6 +528,15 @@ export default function Home() {
 
               if (parsed.done) {
                 // Stream complete
+                continue;
+              }
+
+              if (parsed.reset) {
+                // The model emitted text on its way to deciding to call a
+                // tool. That text is not the answer, so drop what has been
+                // shown so far and let the real answer stream in clean.
+                accumulatedRef.current = "";
+                scheduleUpdate();
                 continue;
               }
 
@@ -572,7 +618,7 @@ export default function Home() {
         }
       }
     },
-    [isLoading, isStreaming, rag.status, resetChatState, threadId, toast]
+    [ensureLocation, isLoading, isStreaming, rag.status, resetChatState, threadId, toast]
   );
 
   const retryFailed = useCallback(() => {
@@ -837,6 +883,17 @@ export default function Home() {
           failedMessage={failedMessage}
           onRetry={retryFailed}
         />
+
+        {!locationDismissed && (
+          <LocationStatus
+            status={locationStatus}
+            location={userLocation}
+            message={locationMessage}
+            onSubmitCity={submitManualCity}
+            onClear={clearLocation}
+            onDismiss={dismissLocation}
+          />
+        )}
 
         <Composer
           input={input}

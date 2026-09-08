@@ -187,3 +187,117 @@ def memory_env(monkeypatch):
 def history(*pairs: tuple[str, str]) -> list[dict[str, str]]:
     """Build a chat history list from (role, content) tuples."""
     return [{"role": role, "content": content} for role, content in pairs]
+
+
+# --------------------------------------------------------------------------
+# Location & weather test support
+#
+# location_service and weather_service both reach the network through
+# ``await asyncio.to_thread(requests.get, ...)`` where ``requests`` is the
+# module-level import in each module, so a test stubs that attribute with a
+# FakeGet. An unrouted URL is an assertion failure rather than a fall-through
+# to the real transport: the whole location suite has to pass with the network
+# unplugged and with no API keys set.
+# --------------------------------------------------------------------------
+
+
+class FakeResponse:
+    """The slice of requests.Response that the services actually read."""
+
+    def __init__(self, payload: Any = None, status_code: int = 200, *, json_error: Exception | None = None):
+        self.status_code = status_code
+        self._payload = payload
+        self._json_error = json_error
+
+    def json(self) -> Any:
+        if self._json_error is not None:
+            raise self._json_error
+        return self._payload
+
+
+def unreadable_response(status_code: int = 200) -> FakeResponse:
+    """A success status whose body is not JSON: the malformed-response path."""
+    return FakeResponse(status_code=status_code, json_error=ValueError("Expecting value: line 1"))
+
+
+class FakeGet:
+    """
+    A recording stand-in for ``requests.get``.
+
+    Routes are matched by URL fragment, which is what lets one fake answer the
+    two endpoints weather_service fires concurrently via asyncio.gather. A
+    route target may be a FakeResponse, an exception (class or instance) to
+    raise, or a callable taking ``(url, params)`` and returning either.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._routes: list[tuple[str, Any]] = []
+
+    def route(self, fragment: str, target: Any) -> "FakeGet":
+        self._routes.append((fragment, target))
+        return self
+
+    def __call__(self, url, params=None, headers=None, timeout=None, **kwargs):
+        self.calls.append(
+            {
+                "url": url,
+                "params": dict(params or {}),
+                "headers": dict(headers or {}),
+                "timeout": timeout,
+            }
+        )
+        for fragment, target in self._routes:
+            if fragment in url:
+                return self._resolve(target, url, params)
+        raise AssertionError(f"A test made an unrouted HTTP request to {url!r}")
+
+    @staticmethod
+    def _resolve(target: Any, url: str, params: Any) -> Any:
+        # Exceptions are checked before callables: an exception *class* is
+        # callable, and raising it is what a caller means by passing one.
+        if isinstance(target, type) and issubclass(target, BaseException):
+            raise target("stubbed transport failure")
+        if isinstance(target, BaseException):
+            raise target
+        if callable(target):
+            produced = target(url, params)
+            if isinstance(produced, BaseException):
+                raise produced
+            return produced
+        return target
+
+    @property
+    def count(self) -> int:
+        return len(self.calls)
+
+    @property
+    def urls(self) -> list[str]:
+        return [call["url"] for call in self.calls]
+
+    def calls_to(self, fragment: str) -> list[dict[str, Any]]:
+        return [call for call in self.calls if fragment in call["url"]]
+
+
+def apply_location_env(monkeypatch) -> None:
+    """
+    Deterministic location/weather settings for a test.
+
+    NOMINATIM_MIN_INTERVAL=0 keeps the 1.1 s policy sleep out of the suite;
+    LOCATION_TIMEZONE_LOOKUP=false keeps a reverse-geocode test from also
+    having to stub the timezone endpoint (tests that exercise timezone turn it
+    back on). The API key is a dummy so the openweather branch is reachable
+    without a real credential ever being read from .env.
+    """
+    monkeypatch.setenv("NOMINATIM_MIN_INTERVAL", "0")
+    monkeypatch.setenv("LOCATION_TIMEZONE_LOOKUP", "false")
+    monkeypatch.setenv("OPENWEATHER_API_KEY", "test-key")
+    monkeypatch.setenv("WEATHER_PROVIDER", "openweather")
+    monkeypatch.setenv("LOCATION_TTL_SECONDS", "3600")
+    monkeypatch.setenv("GEOCODE_COORD_PRECISION", "3")
+    monkeypatch.setenv("LOCATION_STORE_PRECISION", "2")
+    monkeypatch.delenv("OPENWEATHER_UNITS", raising=False)
+    monkeypatch.delenv("NOMINATIM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENWEATHER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPEN_METEO_BASE_URL", raising=False)
+    monkeypatch.delenv("TIMEZONE_LOOKUP_URL", raising=False)
