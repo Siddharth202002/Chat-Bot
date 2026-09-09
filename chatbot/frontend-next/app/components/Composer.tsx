@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/app/lib/utils";
-import { ArrowUp, FileText, MapPin, Paperclip, Square } from "lucide-react";
+import { ArrowUp, FileText, MapPin, MapPinOff, Paperclip, Square } from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -25,6 +25,7 @@ interface ComposerProps {
   onAttach: () => void;
   onDropPdf: (file: File) => void;
   onRequestLocation: () => void;
+  onClearLocation: () => void;
   /** The resolved place, shown next to the location item once it is known. */
   locationLabel?: string | null;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
@@ -48,6 +49,7 @@ export default function Composer({
   onAttach,
   onDropPdf,
   onRequestLocation,
+  onClearLocation,
   locationLabel,
   textareaRef,
 }: ComposerProps) {
@@ -230,6 +232,25 @@ export default function Composer({
                       )}
                     </span>
                   </button>
+
+                  {/* The only way to revoke sharing now that the pill is gone.
+                      Offered only when there is something to revoke. */}
+                  {locationLabel && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => runMenuAction(onClearLocation)}
+                      className={cn(
+                        "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left",
+                        "text-small text-fg-muted",
+                        "transition-colors duration-150 ease-standard",
+                        "hover:bg-hover hover:text-fg"
+                      )}
+                    >
+                      <MapPinOff className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
+                      Stop sharing location
+                    </button>
+                  )}
 
                   <button
                     type="button"

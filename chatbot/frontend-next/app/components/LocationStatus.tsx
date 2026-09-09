@@ -1,17 +1,15 @@
 "use client";
 
-import { type LocationStatus as LocationPhase, type UserLocation } from "@/app/lib/location";
+import { type LocationStatus as LocationPhase } from "@/app/lib/location";
 import { cn } from "@/app/lib/utils";
-import { Loader2, MapPin, MapPinOff, X } from "lucide-react";
+import { Loader2, MapPinOff, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import Button, { IconButton } from "./ui/Button";
 
 interface LocationStatusProps {
   status: LocationPhase;
-  location: UserLocation | null;
   message: string | null;
   onSubmitCity: (city: string) => void;
-  onClear: () => void;
   onDismiss: () => void;
 }
 
@@ -34,17 +32,18 @@ const HINTS: Partial<Record<LocationPhase, string>> = {
  */
 export default function LocationStatus({
   status,
-  location,
   message,
   onSubmitCity,
-  onClear,
   onDismiss,
 }: LocationStatusProps) {
   const [city, setCity] = useState("");
-  /** Only for the `ready` state, where the city form is opt-in via "Change". */
-  const [changing, setChanging] = useState(false);
 
-  if (status === "ready" && !location) return null;
+  // A resolved location says nothing the user needs to act on, so it gets
+  // no permanent strip above the composer. The attach menu shows the place
+  // it resolved to, and offers stopping, on demand. What is left here is
+  // only what is transient (a lookup in flight) or actionable (a failure,
+  // which needs the city input).
+  if (status === "ready") return null;
 
   // Idle renders nothing: the entry point is the composer's attach menu,
   // so a permanent strip above the input bar would just be clutter. This
@@ -57,7 +56,7 @@ export default function LocationStatus({
     status === "unsupported" ||
     status === "insecure" ||
     status === "error";
-  const showForm = isFailure || (status === "ready" && changing);
+  const showForm = isFailure;
   const canSubmit = city.trim().length > 0;
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -66,7 +65,6 @@ export default function LocationStatus({
     if (!trimmed) return;
     onSubmitCity(trimmed);
     setCity("");
-    setChanging(false);
   }
 
   const headline =
@@ -74,9 +72,7 @@ export default function LocationStatus({
       ? "Getting your location…"
       : status === "resolving"
         ? "Resolving your location…"
-        : status === "ready"
-          ? (location?.label ?? "")
-          : (message ??
+        : (message ??
             (status === "denied"
               ? "Location permission is required for this request."
               : status === "unsupported"
@@ -100,8 +96,6 @@ export default function LocationStatus({
               strokeWidth={2}
               aria-hidden
             />
-          ) : status === "ready" ? (
-            <MapPin className="h-3.5 w-3.5 shrink-0 text-fg-subtle" strokeWidth={1.75} aria-hidden />
           ) : (
             <MapPinOff className="h-3.5 w-3.5 shrink-0 text-fg-subtle" strokeWidth={1.75} aria-hidden />
           )}
@@ -115,30 +109,6 @@ export default function LocationStatus({
           >
             {headline}
           </p>
-
-          {status === "ready" && (
-            <>
-              <button
-                type="button"
-                onClick={() => setChanging((prev) => !prev)}
-                aria-expanded={changing}
-                className={cn(
-                  "shrink-0 rounded-sm px-1.5 py-0.5 text-micro text-fg-subtle",
-                  "transition-colors duration-150 ease-standard hover:bg-hover hover:text-fg"
-                )}
-              >
-                Change
-              </button>
-              <IconButton
-                label="Stop sharing location"
-                size="sm"
-                onClick={onClear}
-                className="h-6 w-6 shrink-0 rounded-sm"
-              >
-                <X className="h-3.5 w-3.5" strokeWidth={2} />
-              </IconButton>
-            </>
-          )}
 
           {isFailure && (
             <IconButton
