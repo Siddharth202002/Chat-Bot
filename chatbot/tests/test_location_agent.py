@@ -1342,3 +1342,61 @@ def test_search_settings_are_configurable(monkeypatch):
     assert wrapper.backend == "brave"
     assert wrapper.region == "us-en"
     assert wrapper.max_results == 2
+
+
+# --------------------------------------------------------------------------
+# One output format across the whole provider chain
+# --------------------------------------------------------------------------
+
+def test_the_output_format_policy_is_injected_every_turn():
+    """
+    Each provider has its own house style -- Groq's gpt-oss reaches for tables
+    and bold labels, Gemini answers in flat prose. Same question, visibly
+    different answer depending on which link served it, which reads like a
+    different product. The format is therefore stated in the prompt rather
+    than left to the model.
+    """
+    messages = chatbot_backend._messages_for_model(
+        [HumanMessage(content="suggest 5 bars in north goa")]
+    )
+    system_texts = [m.content for m in messages if isinstance(m, SystemMessage)]
+
+    assert chatbot_backend.OUTPUT_FORMAT_POLICY in system_texts
+
+
+def test_the_format_policy_demands_structure():
+    """
+    The specific failure was a "suggest 5 things" answer coming back as prose
+    from one provider and a table from another, so the list case is called out
+    explicitly and must stay that way.
+    """
+    policy = chatbot_backend.OUTPUT_FORMAT_POLICY
+
+    assert "Markdown table" in policy
+    assert "do not answer" in policy and "prose" in policy
+    # The single-subject shape (weather, a quote) stays a labelled list.
+    assert "**Label:** value" in policy
+
+
+def test_the_format_policy_hides_the_plumbing():
+    """
+    A fallback is an implementation detail. The user must not be able to tell
+    which provider answered, and tool names or error codes must not leak.
+    """
+    policy = chatbot_backend.OUTPUT_FORMAT_POLICY
+
+    assert "no tool names" in policy
+    assert "provider" in policy
+
+
+def test_the_format_policy_comes_before_the_topic_policies():
+    """
+    Ordering is deliberate: identity, then how to answer, then what to answer.
+    A topic rule that contradicts the format would otherwise win by position.
+    """
+    messages = chatbot_backend._messages_for_model([HumanMessage(content="hi")])
+    system_texts = [m.content for m in messages if isinstance(m, SystemMessage)]
+
+    assert system_texts.index(chatbot_backend.OUTPUT_FORMAT_POLICY) < system_texts.index(
+        chatbot_backend.LOCATION_WEATHER_POLICY
+    )

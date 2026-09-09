@@ -1486,6 +1486,36 @@ class _StreamReset:
 
 STREAM_RESET = _StreamReset()
 
+# The chain answers from whichever provider is available, and each one has its
+# own house style: Groq's gpt-oss reaches for markdown tables and bold labels,
+# while Gemini tends to reply in flat prose. Same question, visibly different
+# answer -- which reads like a different product depending on the time of day.
+#
+# The format therefore cannot be left to the model. This states it explicitly
+# and is injected on every turn, so the provider is an implementation detail
+# rather than something the user can see.
+OUTPUT_FORMAT_POLICY = """Response format (follow this regardless of the topic):
+
+- Answer in GitHub-flavoured Markdown, and always structure the answer. Never
+  reply with one undifferentiated paragraph when the content has parts.
+- Recommending, comparing or listing several things (places, options, products,
+  models): use a Markdown table. Put the item name in the first column and give
+  each remaining attribute its own column. Number the rows when order or count
+  matters. This is the default for "suggest N things" questions -- do not answer
+  those in prose.
+- A single subject with several attributes (weather, a stock quote, one place):
+  use a bulleted list of `- **Label:** value` lines, one attribute per line.
+- Steps or instructions: a numbered list, one action per step.
+- Bold the key nouns and figures so the answer can be skimmed. Keep any preamble
+  to a single short sentence, and close with one short offer of further help at
+  most.
+- Never expose the plumbing: no tool names, no raw JSON, no error codes, and no
+  mention of which model or provider produced the answer.
+- Say plainly when something is not known rather than padding. If a web search
+  found nothing for part of the question, say which part and stop -- do not fill
+  the gap with a guess or with unrelated results."""
+
+
 # Location and weather are the two things the model is most tempted to answer
 # from memory, and a confidently wrong "it's 24 degrees and sunny" is worse than
 # no answer at all. This prompt states the tool-selection rules explicitly --
@@ -1775,13 +1805,16 @@ def _messages_for_model(messages: list[BaseMessage]) -> list[BaseMessage]:
     """
     Inject runtime context on every turn:
     1) The assistant's identity/persona, so it answers as Zeno AI.
-    2) The location/weather tool-selection policy, so live values always come
+    2) The output format, so an answer looks the same whichever provider in the
+       fallback chain happened to serve it.
+    3) The location/weather tool-selection policy, so live values always come
        from a tool and a known location is never re-requested from the user.
-    3) Spending amounts are in INR and should never be labeled as dollars.
-    4) MCP status context so the assistant can explain when tools are unavailable.
+    4) Spending amounts are in INR and should never be labeled as dollars.
+    5) MCP status context so the assistant can explain when tools are unavailable.
     """
     system_messages: list[SystemMessage] = [
         SystemMessage(content=ZENO_IDENTITY_PROMPT),
+        SystemMessage(content=OUTPUT_FORMAT_POLICY),
         SystemMessage(content=LOCATION_WEATHER_POLICY),
         SystemMessage(
             content=(
