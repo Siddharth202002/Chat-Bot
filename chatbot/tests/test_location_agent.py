@@ -1094,3 +1094,121 @@ def test_multi_block_content_is_flattened_for_users():
     assert chatbot_backend._message_text(blocks) == "It is 15 C in London."
     assert chatbot_backend._message_text("plain") == "plain"
     assert chatbot_backend._message_text(None) == ""
+
+
+# --------------------------------------------------------------------------
+# Degenerate model output
+# --------------------------------------------------------------------------
+
+# Shaped like the real thing: short repeated fragments, ellipses and
+# zero-width spaces, then the model noticing and answering properly.
+COLLAPSE = (
+    "Saharan (\u200b\u200b\u200b\u200b**  \u200b  \n\nOops! It looks  ...  \n\n"
+    + "\u2026\n\n" * 40
+    + "...\n\n" * 30
+    + "Sorry\u2026\n\n...\n\n" * 10
+    + "We...\n\n" * 20
+)
+RECOVERED = (
+    "It looks like something went wrong with my response. Let me give you the "
+    "weather details for Saharanpur:\n\nCurrent temperature: 32.6 C\n"
+    "Humidity: 59 %\nCondition: Clear sky\n"
+)
+HEALTHY = (
+    "The current weather in **Saharanpur, Uttar Pradesh, India** is:\n\n"
+    "- **Temperature:** 32.6 C\n- **Humidity:** 59 %\n"
+    "- **Condition:** Clear sky\n\nLet me know if you need anything else!\n"
+)
+
+
+def _drive_filter(text: str, chunk: int = 12) -> tuple[str, int]:
+    """Feed text through the filter the way the streaming loop does."""
+    stream_filter = chatbot_backend._DegenerateOutputFilter()
+    shown: list[str] = []
+    retractions = 0
+    for index in range(0, len(text), chunk):
+        emitted, retract = stream_filter.feed(text[index : index + chunk])
+        if retract:
+            retractions += 1
+            # What the client does on STREAM_RESET.
+            shown.clear()
+        if emitted:
+            shown.append(emitted)
+    return "".join(shown), retractions
+
+
+def test_a_repetition_collapse_is_retracted_and_the_answer_kept():
+    """
+    The reported bug: a wall of "...", "Oops...", "We..." and zero-width
+    spaces arriving before the real weather answer. The numbers were always
+    correct -- the tool results were fine -- so only the junk must go.
+    """
+    shown, retractions = _drive_filter(COLLAPSE + RECOVERED)
+
+    assert retractions == 1, "should retract exactly once, on the transition"
+    assert "Oops" not in shown
+    assert "\u200b" not in shown
+    assert "We..." not in shown
+    # The answer itself survives intact.
+    assert "32.6" in shown and "Clear sky" in shown
+    assert shown.lstrip().startswith("It looks like something went wrong")
+
+
+def test_a_healthy_answer_is_never_touched():
+    """The filter must be invisible on every normal reply."""
+    shown, retractions = _drive_filter(HEALTHY)
+
+    assert retractions == 0
+    assert shown == HEALTHY
+
+
+@pytest.mark.parametrize(
+    "label,sample",
+    [
+        ("prose with an ellipsis", "Well... that is interesting. Let me think.\n"),
+        ("markdown table", "| a | b |\n|---|---|\n| 1 | 2 |\n" * 6),
+        ("fenced code", "```py\nx = [1, 2, 3]\ny = {**a, **b}\n```\n" * 5),
+        ("bulleted weather", "- **Temp:** 30 C\n- **Wind:** 4 m/s\n" * 12),
+    ],
+)
+def test_punctuation_heavy_but_legitimate_output_survives(label, sample):
+    """
+    The detector keys on "almost no words", so markdown, code and tables --
+    all punctuation-dense but real -- must pass through untouched.
+    """
+    shown, retractions = _drive_filter(sample)
+
+    assert retractions == 0, f"{label} was wrongly judged degenerate"
+    assert shown == sample
+
+
+def test_a_collapse_that_never_recovers_emits_nothing():
+    """
+    Better to emit nothing -- the caller's own guard then sends a short
+    apology -- than to show the user a wall of ellipses.
+    """
+    shown, retractions = _drive_filter(COLLAPSE)
+
+    assert retractions == 1
+    assert shown.strip() == ""
+
+
+def test_the_non_streaming_sanitizer_strips_a_collapse():
+    """
+    /api/chat has no retraction channel, so the collapse is removed from the
+    finished text instead.
+    """
+    cleaned = chatbot_backend.sanitize_degenerate_text(COLLAPSE + RECOVERED)
+
+    assert "Oops" not in cleaned and "We..." not in cleaned
+    assert "32.6" in cleaned
+    assert chatbot_backend.sanitize_degenerate_text(HEALTHY) == HEALTHY
+
+
+def test_the_sanitizer_keeps_text_it_cannot_improve():
+    """Never return an empty reply just because the text looked odd."""
+    assert chatbot_backend.sanitize_degenerate_text("") == ""
+    assert chatbot_backend.sanitize_degenerate_text("Hi!") == "Hi!"
+    # A collapse with no recovery has nothing better to offer, so the original
+    # is preserved rather than blanking the reply.
+    assert chatbot_backend.sanitize_degenerate_text(COLLAPSE) == COLLAPSE

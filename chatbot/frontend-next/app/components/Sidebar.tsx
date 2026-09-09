@@ -38,10 +38,9 @@ interface SidebarProps {
   historyError: boolean;
   onRetryHistory: () => void;
   onNewChat: () => void;
-  onUploadPdf: () => void;
-  onDropPdf: (file: File) => void;
   onLoadChat: (id: string) => void;
   onRequestDelete: (chat: ChatSummary) => void;
+  onRequestDeleteAll: () => void;
   rag: RagState;
   isOpen: boolean;
   isDesktop: boolean;
@@ -56,10 +55,9 @@ export default function Sidebar({
   historyError,
   onRetryHistory,
   onNewChat,
-  onUploadPdf,
-  onDropPdf,
   onLoadChat,
   onRequestDelete,
+  onRequestDeleteAll,
   rag,
   isOpen,
   isDesktop,
@@ -67,10 +65,8 @@ export default function Sidebar({
   onToggle,
 }: SidebarProps) {
   const [query, setQuery] = useState("");
-  const [isDragging, setIsDragging] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const dragDepth = useRef(0);
 
   // Only trap focus when the drawer floats above the content (mobile).
   const isModal = isOpen && !isDesktop;
@@ -92,30 +88,6 @@ export default function Sidebar({
     requestAnimationFrame(() => searchRef.current?.focus());
   }
 
-  function handleDragEnter(e: DragEvent<HTMLElement>) {
-    if (!e.dataTransfer.types.includes("Files")) return;
-    e.preventDefault();
-    dragDepth.current += 1;
-    setIsDragging(true);
-  }
-
-  function handleDragLeave(e: DragEvent<HTMLElement>) {
-    e.preventDefault();
-    dragDepth.current -= 1;
-    if (dragDepth.current <= 0) {
-      dragDepth.current = 0;
-      setIsDragging(false);
-    }
-  }
-
-  function handleDrop(e: DragEvent<HTMLElement>) {
-    e.preventDefault();
-    dragDepth.current = 0;
-    setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) onDropPdf(file);
-  }
-
   /* ── Collapsed rail (desktop only) ──────────────────────────── */
 
   const rail = (
@@ -128,14 +100,6 @@ export default function Sidebar({
       </IconButton>
       <IconButton label="Search chats" onClick={focusSearch}>
         <Search className="h-4.5 w-4.5" strokeWidth={1.75} />
-      </IconButton>
-      <IconButton
-        label={rag.status === "uploading" ? "Uploading PDF…" : "Attach a PDF"}
-        onClick={onUploadPdf}
-        disabled={rag.status === "uploading"}
-        className={cn(rag.status === "ready" && "text-accent-fg")}
-      >
-        <FileText className="h-4.5 w-4.5" strokeWidth={1.75} />
       </IconButton>
     </div>
   );
@@ -233,7 +197,9 @@ export default function Sidebar({
     );
   }
 
-  /* ── RAG document card ──────────────────────────────────────── */
+  /* ── Indexed document status ────────────────────────────────
+     Read-only on purpose. Uploading lives in the composer now, so the sidebar
+     reports what is indexed without offering a second way to change it. */
 
   const ragCard =
     rag.status === "ready" ? (
@@ -250,13 +216,6 @@ export default function Sidebar({
           </div>
           <Badge tone="success">Indexed</Badge>
         </div>
-        <button
-          type="button"
-          onClick={onUploadPdf}
-          className="mt-2 rounded-sm text-micro font-medium text-accent-fg transition-colors hover:text-fg"
-        >
-          Replace document
-        </button>
       </div>
     ) : rag.status === "uploading" ? (
       <div className="rounded-md border border-line bg-canvas/60 p-2.5">
@@ -266,31 +225,13 @@ export default function Sidebar({
     ) : rag.status === "error" ? (
       <div className="rounded-md border border-danger/25 bg-danger-subtle p-2.5">
         <p className="text-micro text-danger">{rag.message}</p>
-        <button
-          type="button"
-          onClick={onUploadPdf}
-          className="mt-1.5 rounded-sm text-micro font-medium text-fg-muted transition-colors hover:text-fg"
-        >
-          Try another file
-        </button>
       </div>
-    ) : (
-      <Button variant="secondary" size="sm" block onClick={onUploadPdf}>
-        <FileText className="h-4 w-4" strokeWidth={1.75} />
-        Attach a PDF
-      </Button>
-    );
+    ) : null;
 
   /* ── Expanded panel ─────────────────────────────────────────── */
 
   const panel = (
     <>
-      {isDragging && (
-        <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-lg border-2 border-dashed border-accent-muted bg-overlay/95">
-          <span className="text-small font-medium text-accent-fg">Drop a PDF</span>
-        </div>
-      )}
-
       {/* Brand + collapse */}
       <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-line-subtle px-3">
         <span
@@ -316,6 +257,22 @@ export default function Sidebar({
           New chat
         </Button>
         {ragCard}
+        {/* Only offered when there is actually something to clear. */}
+        {chatHistory.length > 0 && (
+          <button
+            type="button"
+            onClick={onRequestDeleteAll}
+            className={cn(
+              "flex items-center justify-center gap-1.5 rounded-md py-1.5",
+              "text-micro font-medium text-fg-subtle",
+              "transition-colors duration-150 ease-standard",
+              "hover:bg-danger-subtle hover:text-danger"
+            )}
+          >
+            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+            Delete all chats
+          </button>
+        )}
       </div>
 
       {/* Search */}
@@ -377,10 +334,6 @@ export default function Sidebar({
         aria-label="Chats"
         aria-modal={isModal || undefined}
         role={isModal ? "dialog" : undefined}
-        onDragEnter={handleDragEnter}
-        onDragOver={(e) => e.preventDefault()}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
         className={cn(
           "z-70 flex h-full flex-col overflow-hidden border-r border-line-subtle bg-raised",
           "fixed inset-y-0 left-0 w-68 shadow-e3 transition-transform duration-200 ease-standard",

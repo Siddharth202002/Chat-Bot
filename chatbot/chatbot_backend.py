@@ -1258,6 +1258,154 @@ ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Zeno AI")
 MAX_TOOL_ROUNDS = 10
 
 
+# --- Degenerate-output detection ------------------------------------------
+#
+# gpt-oss-120b intermittently collapses into a repetition loop: hundreds of
+# tokens of "...", "Sorry...", "Oops...", no-break and zero-width spaces, and
+# then it notices, apologises and prints the real answer. The numbers in that
+# real answer are correct -- the tool results were fine -- so the failure is
+# purely presentational, but it dominates the reply.
+#
+# Sampling changes (temperature, frequency penalty) made it rarer and shorter
+# without removing it, so this catches the pathology in the output stream
+# instead: text that is overwhelmingly NOT words. That test is independent of
+# model, language and phrasing, which a keyword match on the apology would not
+# be.
+
+# Judge only once enough has been seen to be sure; a short "..." is normal.
+DEGENERATE_MIN_CHARS = 220
+DEGENERATE_WINDOW_CHARS = 400
+# Real prose sits far above this even when heavy on markdown punctuation; the
+# collapse sits near zero.
+DEGENERATE_ALNUM_RATIO = 0.12
+# How much clean prose has to appear before the stream is trusted again. The
+# length floor is what separates the model's recovery sentence ("It looks like
+# something went wrong, let me give you the weather...") from the short
+# fragments the collapse is made of ("Oops! It looks ...").
+RECOVERY_MIN_LINE_CHARS = 40
+RECOVERY_ALNUM_RATIO = 0.45
+# Ceiling on what is held back while collapsed, so a loop that never recovers
+# cannot grow unboundedly.
+DEGENERATE_MAX_PENDING = 8000
+
+
+# Whitespace and the punctuation the collapse is built from, trimmed off the
+# front of a recovered answer so it does not open on the tail of the junk.
+_JUNK_EDGE_CHARS = (
+    " \t\r\n.*_-"
+    "\u2026"  # horizontal ellipsis - the collapse's favourite token
+    "\u00a0"  # no-break space
+    "\u202f"  # narrow no-break space
+    "\u200b"  # zero-width space
+    "\ufeff"  # zero-width no-break space
+)
+
+
+def _alnum_ratio(text: str) -> float:
+    if not text:
+        return 1.0
+    return sum(1 for character in text if character.isalnum()) / len(text)
+
+
+class _DegenerateOutputFilter:
+    """
+    Streaming filter that drops a repetition collapse and keeps the recovery.
+
+    ``feed`` returns ``(text_to_emit, retract)``. ``retract`` is True exactly
+    once, on the transition into a collapse, so the caller can take back what it
+    has already streamed. While collapsed nothing is emitted; the text is held
+    until a sustained run of real prose appears, and only that run is released.
+    """
+
+    def __init__(self) -> None:
+        self._window = ""
+        self._seen = 0
+        self._pending = ""
+        self.collapsed = False
+
+    def feed(self, piece: str) -> tuple[str, bool]:
+        if not piece:
+            return "", False
+
+        if self.collapsed:
+            self._pending = (self._pending + piece)[-DEGENERATE_MAX_PENDING:]
+            recovered = self._extract_recovery()
+            if recovered is None:
+                return "", False
+            self.collapsed = False
+            self._pending = ""
+            self._window = recovered[-DEGENERATE_WINDOW_CHARS:]
+            self._seen = len(recovered)
+            return recovered, False
+
+        self._window = (self._window + piece)[-DEGENERATE_WINDOW_CHARS:]
+        self._seen += len(piece)
+        if (
+            self._seen >= DEGENERATE_MIN_CHARS
+            and len(self._window) >= DEGENERATE_MIN_CHARS
+            and _alnum_ratio(self._window) < DEGENERATE_ALNUM_RATIO
+        ):
+            self.collapsed = True
+            self._pending = ""
+            return "", True
+        return piece, False
+
+    def _extract_recovery(self) -> str | None:
+        """
+        Where the real answer resumes inside the held text, if it has.
+
+        Line-based, because that is the shape of the pathology: the collapse is
+        a torrent of very short fragments ("We...", "Sorry...", a lone
+        ellipsis) while the recovery opens with a full sentence. A
+        character-window scan was tried first and was wrong -- a window
+        straddling the boundary mixes enough of the real sentence to pass the
+        ratio test, so it started mid-junk and leaked "We...We...We..." into
+        the answer.
+
+        Both conditions matter. The ratio alone admits "Oops! It looks ...";
+        the length alone admits a long run of punctuation.
+        """
+        lines = self._pending.splitlines(keepends=True)
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if (
+                len(stripped) >= RECOVERY_MIN_LINE_CHARS
+                and _alnum_ratio(stripped) >= RECOVERY_ALNUM_RATIO
+            ):
+                recovered = "".join(lines[index:]).lstrip(_JUNK_EDGE_CHARS)
+                return recovered or None
+        return None
+
+
+def sanitize_degenerate_text(text: str) -> str:
+    """
+    Same filter, applied to an already-complete message.
+
+    Used on the non-streaming path, where there is no opportunity to retract:
+    the collapse is simply removed before the reply is returned.
+    """
+    if not text:
+        return text
+    output: list[str] = []
+    stream_filter = _DegenerateOutputFilter()
+    for piece in text.splitlines(keepends=True):
+        emitted, retract = stream_filter.feed(piece)
+        if retract:
+            # The collapse is only detectable once enough of it has gone by, so
+            # its opening lines have already been collected. Streaming takes
+            # those back with STREAM_RESET; here the equivalent is dropping
+            # them, or the reply would still open on "Oops! It looks ...".
+            output.clear()
+        if emitted:
+            output.append(emitted)
+    if stream_filter.collapsed:
+        recovered = stream_filter._extract_recovery()
+        if recovered:
+            output.append(recovered)
+    result = "".join(output)
+    return result if result.strip() else text
+
+
 class _StreamReset:
     """
     Yielded when text already streamed this turn must be discarded.
@@ -1880,7 +2028,9 @@ async def get_response(user_input: str, thread_id: str = "1", user_id: str = "")
             {"messages": [HumanMessage(content=user_input)]},
             config=config,
         )
-        return _message_text(response["messages"][-1].content)
+        return sanitize_degenerate_text(
+            _message_text(response["messages"][-1].content)
+        )
     finally:
         _active_memories.reset(memory_token)
         _active_thread_id.reset(thread_token)
@@ -1970,6 +2120,7 @@ async def _get_response_stream_for_config(
         streamed_this_round = 0
         is_tool_round = False
         last_error: Exception | None = None
+        output_filter = _DegenerateOutputFilter()
 
         # Try each provider until one streams the round. A provider that fails
         # part-way through gets its partial text retracted first, so the user
@@ -1979,6 +2130,7 @@ async def _get_response_stream_for_config(
             streamed_chunk = None
             streamed_this_round = 0
             is_tool_round = False
+            output_filter = _DegenerateOutputFilter()
             try:
                 async for chunk in model.astream(working_messages):
                     streamed_chunk = (
@@ -1994,9 +2146,23 @@ async def _get_response_stream_for_config(
                         continue
 
                     for piece in _content_pieces(chunk.content):
-                        streamed_this_round += len(piece)
+                        text, retract = output_filter.feed(piece)
+                        if retract:
+                            # The model has collapsed into a repetition loop.
+                            # Take back the junk already on screen; whatever it
+                            # produces once it recovers becomes the answer.
+                            logger.warning(
+                                "Discarding a degenerate model response and "
+                                "waiting for it to recover."
+                            )
+                            if streamed_this_round:
+                                yield STREAM_RESET
+                                streamed_this_round = 0
+                        if not text:
+                            continue
+                        streamed_this_round += len(text)
                         emitted_any_text = True
-                        yield piece
+                        yield text
                 last_error = None
                 break
             except Exception as exc:
@@ -2222,6 +2388,66 @@ async def _delete_chat_async(thread_id: str, user_id: str) -> bool:
 async def delete_chat(thread_id: str, user_id: str) -> bool:
     """Delete all checkpoints associated with a thread_id."""
     return await _delete_chat_async(thread_id, user_id)
+
+
+async def delete_all_chats(user_id: str) -> int:
+    """
+    Delete every thread belonging to one user. Returns how many were removed.
+
+    The thread ids are read back first and every DELETE is scoped by them, so
+    this can never touch another user's rows -- the checkpoint tables are keyed
+    only by thread_id and have no user column of their own, which is exactly
+    the kind of place a bulk delete goes wrong.
+
+    Long-term memories are user-scoped and deliberately survive: the user asked
+    to clear their conversations, not to be forgotten.
+    """
+    if not user_id:
+        raise ValueError("user_id is required.")
+
+    await _ensure_app_tables()
+    if _async_conn is None:
+        raise RuntimeError("Database connection is unavailable.")
+
+    async with _async_conn.execute(
+        "SELECT thread_id FROM chat_threads WHERE user_id = ?", (user_id,)
+    ) as cursor:
+        thread_ids = [str(row[0]) for row in await cursor.fetchall()]
+
+    if not thread_ids:
+        return 0
+
+    # One statement per table rather than per thread: a user with hundreds of
+    # chats would otherwise issue thousands of round trips.
+    placeholders = ",".join("?" for _ in thread_ids)
+    await _async_conn.execute(
+        "DELETE FROM chat_threads WHERE user_id = ?", (user_id,)
+    )
+    await _async_conn.execute(
+        f"DELETE FROM checkpoints WHERE thread_id IN ({placeholders})", thread_ids
+    )
+    for table in ("checkpoints_writes", "checkpoints_blobs"):
+        try:
+            await _async_conn.execute(
+                f"DELETE FROM {table} WHERE thread_id IN ({placeholders})",
+                thread_ids,
+            )
+        except aiosqlite.OperationalError:
+            # Older checkpointer schemas do not have every table.
+            pass
+    await _async_conn.commit()
+
+    for thread_id in thread_ids:
+        _rag_states.pop((user_id, thread_id), None)
+        try:
+            await memory_store.clear_thread_state(user_id, thread_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed clearing memory state for thread %s: %s", thread_id, exc
+            )
+
+    logger.info("Deleted %d chat threads for user %s", len(thread_ids), user_id)
+    return len(thread_ids)
 
 
 if __name__ == "__main__":

@@ -86,6 +86,8 @@ export default function Home() {
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ChatSummary | null>(null);
+  const [pendingDeleteAll, setPendingDeleteAll] = useState(false);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const [rag, setRag] = useState<RagState>(IDLE_RAG);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
@@ -744,6 +746,51 @@ export default function Home() {
     }
   }, [chatHistory, messages, pendingDelete, resetChatState, stopGenerating, threadId, toast]);
 
+  const confirmDeleteAll = useCallback(async () => {
+    setPendingDeleteAll(false);
+    setIsDeletingAll(true);
+
+    // Enough state to put everything back if the request fails, so a network
+    // blip cannot look like "all my chats vanished".
+    const snapshot = { history: chatHistory, messages, threadId };
+
+    try {
+      const res = await fetch(`${API_URL}/api/chats`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (res.status === 401) {
+        setCurrentUser(null);
+        resetChatState();
+        toast("error", "Please sign in again.");
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok || data.status !== "ok") {
+        throw new Error(data.detail || "Delete failed");
+      }
+
+      // Only clear locally once the server has confirmed. The open
+      // conversation is one of the deleted ones, so it goes too.
+      stopGenerating();
+      setChatHistory([]);
+      setMessages([]);
+      setFailedMessage(null);
+      setRag(IDLE_RAG);
+      setThreadId(generateId());
+      const count = Number(data.deleted ?? 0);
+      toast("success", count === 1 ? "1 chat deleted" : `${count} chats deleted`);
+    } catch (err) {
+      console.error("Error deleting all chats:", err);
+      setChatHistory(snapshot.history);
+      setMessages(snapshot.messages);
+      setThreadId(snapshot.threadId);
+      toast("error", "Couldn't delete your chats. Try again.");
+    } finally {
+      setIsDeletingAll(false);
+    }
+  }, [chatHistory, messages, resetChatState, stopGenerating, threadId, toast]);
+
   /* ── Keyboard shortcuts ───────────────────────────────────────── */
 
   useEffect(() => {
@@ -856,10 +903,9 @@ export default function Home() {
         historyError={historyError}
         onRetryHistory={fetchHistory}
         onNewChat={handleNewChat}
-        onUploadPdf={openPdfPicker}
-        onDropPdf={uploadPdf}
         onLoadChat={loadChat}
         onRequestDelete={setPendingDelete}
+        onRequestDeleteAll={() => setPendingDeleteAll(true)}
         rag={rag}
         isOpen={sidebarOpen}
         isDesktop={isDesktop}
@@ -930,6 +976,21 @@ export default function Home() {
         destructive
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingDeleteAll}
+        title="Delete all chats?"
+        description={
+          `All ${chatHistory.length} conversation${chatHistory.length === 1 ? "" : "s"} ` +
+          "and their full history will be permanently deleted. This cannot be " +
+          "undone. What the assistant remembers about you is kept."
+        }
+        confirmLabel={isDeletingAll ? "Deleting…" : "Delete all"}
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={confirmDeleteAll}
+        onCancel={() => setPendingDeleteAll(false)}
       />
     </div>
   );

@@ -44,6 +44,7 @@ from chatbot_backend import (
     close_backend,
     create_access_token,
     create_user,
+    delete_all_chats,
     delete_chat,
     delete_user_memory,
     get_all_chats,
@@ -360,6 +361,25 @@ async def get_chats(user: UserRecord = Depends(current_user)) -> dict[str, Any]:
         return {"chats": chats}
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.delete("/api/chats")
+async def remove_all_chats(user: UserRecord = Depends(current_user)) -> dict[str, Any]:
+    """
+    Delete every one of the signed-in user's chat threads.
+
+    Scoped to the session's own user id -- there is no way to name someone
+    else's threads through this route. Long-term memories are user-scoped and
+    survive: this clears conversations, not the assistant's memory of the user.
+    """
+    try:
+        deleted = await delete_all_chats(user["id"])
+    except Exception as exc:
+        logging.getLogger("chatbot.api").exception("Failed to delete all chats.")
+        raise HTTPException(
+            status_code=500, detail="Could not delete your chats."
+        ) from exc
+    return {"status": "ok", "deleted": deleted}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
