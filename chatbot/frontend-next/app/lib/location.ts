@@ -23,10 +23,29 @@ export type LocationStatus =
   | "ready"
   | "denied"
   | "unsupported"
+  | "insecure"
   | "error";
 
-/** The four ways `navigator.geolocation` can leave us without coordinates. */
-export type GeolocationFailure = "denied" | "timeout" | "unavailable" | "unsupported";
+/** The ways `navigator.geolocation` can leave us without coordinates. */
+export type GeolocationFailure =
+  | "denied"
+  | "timeout"
+  | "unavailable"
+  | "unsupported"
+  | "insecure";
+
+/**
+ * The backend records only the four browser-reported statuses, so "insecure"
+ * (our own pre-check) is reported to it as the closest true statement: on this
+ * origin the API really is unavailable. The distinction is kept in the UI,
+ * where it is the difference between an actionable message and a wild goose
+ * chase through browser settings.
+ */
+export function toServerStatus(
+  reason: GeolocationFailure
+): "denied" | "timeout" | "unavailable" | "unsupported" {
+  return reason === "insecure" ? "unsupported" : reason;
+}
 
 export interface StoredLocationResponse {
   status: string;
@@ -242,6 +261,17 @@ export function requestBrowserPosition(
       return;
     }
 
+    // Browsers restrict geolocation to secure contexts, exempting localhost.
+    // That is exactly why this works in development and then fails on an
+    // http:// deployment: Chrome answers PERMISSION_DENIED without ever
+    // showing a prompt. Detecting it here is the difference between telling
+    // the user "enable location in your browser settings" -- which cannot
+    // possibly work -- and telling them the site needs HTTPS.
+    if (typeof window !== "undefined" && window.isSecureContext === false) {
+      reject(new Error("insecure"));
+      return;
+    }
+
     navigator.geolocation.getCurrentPosition(
       (position) =>
         resolve({
@@ -360,7 +390,7 @@ export async function postLocationFailure(reason: GeolocationFailure): Promise<v
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: reason }),
+      body: JSON.stringify({ status: toServerStatus(reason) }),
     },
     "Could not record the location status."
   );

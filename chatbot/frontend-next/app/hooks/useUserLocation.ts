@@ -19,6 +19,11 @@ const FAILURE_COPY: Record<GeolocationFailure, string> = {
   timeout: "Your browser took too long to find you.",
   unavailable: "Your device could not work out where it is.",
   unsupported: "This browser does not support location.",
+  // Deliberately NOT phrased as a permission problem. There is no browser
+  // setting that fixes this, so sending the user to look for one wastes their
+  // time -- the site itself has to be served over HTTPS.
+  insecure:
+    "Location needs a secure (HTTPS) connection, and this page is served over HTTP.",
 };
 
 const FAILURE_STATUS: Record<GeolocationFailure, LocationStatus> = {
@@ -26,6 +31,7 @@ const FAILURE_STATUS: Record<GeolocationFailure, LocationStatus> = {
   timeout: "error",
   unavailable: "error",
   unsupported: "unsupported",
+  insecure: "insecure",
 };
 
 /** Narrow a rejection message back to a `GeolocationFailure`. */
@@ -35,6 +41,7 @@ function asFailure(message: string): GeolocationFailure {
     case "timeout":
     case "unsupported":
     case "unavailable":
+    case "insecure":
       return message;
     default:
       return "unavailable";
@@ -164,7 +171,14 @@ export function useUserLocation({
 
     // The user said no, or cannot say yes. Re-prompting is futile and rude;
     // LocationStatus offers the manual city input instead.
-    if (statusRef.current === "denied" || statusRef.current === "unsupported") return null;
+    if (
+      statusRef.current === "denied" ||
+      statusRef.current === "unsupported" ||
+      // No amount of asking makes an http:// origin secure.
+      statusRef.current === "insecure"
+    ) {
+      return null;
+    }
 
     // A timeout is NOT proof the user will eventually say yes. Chrome reports an
     // *ignored* permission bubble as TIMEOUT (code 3), never PERMISSION_DENIED —

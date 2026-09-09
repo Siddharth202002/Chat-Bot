@@ -11,6 +11,7 @@ interface LocationStatusProps {
   location: UserLocation | null;
   message: string | null;
   onSubmitCity: (city: string) => void;
+  onRequest: () => void;
   onClear: () => void;
   onDismiss: () => void;
 }
@@ -19,6 +20,11 @@ interface LocationStatusProps {
 const HINTS: Partial<Record<LocationPhase, string>> = {
   denied: "Enable location for this site in your browser settings, or type a city below.",
   unsupported: "Type a city below and it will be used instead.",
+  // Names the real cause. Browsers allow geolocation only on HTTPS (localhost
+  // excepted), which is why this works in development and not on a plain-http
+  // deployment -- and why no browser setting can fix it.
+  insecure:
+    "Browsers only allow location on HTTPS, so the browser blocked it before we could ask. Type a city below instead.",
   error: "Try again, or type a city below.",
 };
 
@@ -32,6 +38,7 @@ export default function LocationStatus({
   location,
   message,
   onSubmitCity,
+  onRequest,
   onClear,
   onDismiss,
 }: LocationStatusProps) {
@@ -39,11 +46,39 @@ export default function LocationStatus({
   /** Only for the `ready` state, where the city form is opt-in via "Change". */
   const [changing, setChanging] = useState(false);
 
-  // Nothing to say: no location work in flight and nothing worth reporting.
-  if (status === "idle") return null;
   if (status === "ready" && !location) return null;
 
-  const isFailure = status === "denied" || status === "unsupported" || status === "error";
+  // Idle used to render nothing, which meant the ONLY way to share a location
+  // was for needsLocation() to correctly parse the user's sentence. A typo or
+  // an unusual phrasing left them with no control at all and an assistant
+  // insisting it could not find them. This is the manual escape hatch.
+  if (status === "idle") {
+    return (
+      <div className="w-full shrink-0 px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full max-w-3xl items-center gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onRequest}
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5",
+              "text-micro text-fg-subtle",
+              "transition-colors duration-150 ease-standard",
+              "hover:bg-hover hover:text-fg"
+            )}
+          >
+            <MapPin className="h-3 w-3 shrink-0" strokeWidth={1.75} aria-hidden />
+            Use my location
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const isFailure =
+    status === "denied" ||
+    status === "unsupported" ||
+    status === "insecure" ||
+    status === "error";
   const showForm = isFailure || (status === "ready" && changing);
   const canSubmit = city.trim().length > 0;
 
@@ -68,7 +103,9 @@ export default function LocationStatus({
               ? "Location permission is required for this request."
               : status === "unsupported"
                 ? "This browser does not support location."
-                : "Could not work out where you are."));
+                : status === "insecure"
+                  ? "Location needs a secure (HTTPS) connection."
+                  : "Could not work out where you are."));
 
   return (
     <div className="w-full shrink-0 px-4 sm:px-6 lg:px-8">

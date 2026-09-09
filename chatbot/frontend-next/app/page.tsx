@@ -890,6 +890,7 @@ export default function Home() {
             location={userLocation}
             message={locationMessage}
             onSubmitCity={submitManualCity}
+            onRequest={ensureLocation}
             onClear={clearLocation}
             onDismiss={dismissLocation}
           />
