@@ -79,7 +79,10 @@ _llm_with_tools: Any | None = None
 _llm_init_error: str | None = None
 _llm_chain: list[tuple[str, Any]] | None = None
 
-DEFAULT_PROVIDER_CHAIN = "groq,gemini,gemini-lite,openrouter"
+# Groq first and three times over: its models are the fastest available here
+# and each carries its own daily quota, so the chain exhausts them before
+# paying the latency of another provider.
+DEFAULT_PROVIDER_CHAIN = "groq,groq-alt,groq-alt2,gemini,gemini-lite,openrouter"
 
 # Shown to the user when the whole chain is exhausted. Raw provider errors
 # ("402 payment_required", quota JSON) mean nothing to them and leak billing
@@ -114,20 +117,51 @@ def _max_tokens() -> int:
     return int(os.getenv("GROQ_MAX_TOKENS", "2048"))
 
 
-def _build_groq() -> Any | None:
+def _build_groq_model(model_env: str, default_model: str) -> Any | None:
+    """
+    One Groq link. Every link shares the API key and differs only by model.
+
+    Groq meters its free tier PER MODEL -- a 429 reads "Rate limit reached for
+    model openai/gpt-oss-120b ... on tokens per day" -- so a sibling model is
+    still available once the primary's daily budget is gone, and it is far
+    quicker to reach than another provider.
+    """
     if not (os.getenv("GROQ_API_KEY") or "").strip():
         return None
     from langchain_groq import ChatGroq
 
     return ChatGroq(
-        model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+        model=os.getenv(model_env, default_model),
         temperature=_temperature(),
         max_tokens=_max_tokens(),
+        # NOT a knob to turn up. The Groq SDK retries a 429 twice by default and
+        # honours Retry-After up to 60s, so a rate-limited request used to sleep
+        # ~30s INSIDE the client and never raise -- the fallback chain below was
+        # never even reached, and a single turn measured 41s with 34s of it spent
+        # asleep. Failing immediately is the whole point: the chain is the retry
+        # strategy, and retrying a *daily* quota could never have worked anyway.
+        max_retries=int(os.getenv("GROQ_MAX_RETRIES", "0")),
+        # A hung request must not stall the turn either.
+        request_timeout=float(os.getenv("GROQ_TIMEOUT", "30")),
         # Suppresses the repetition loops described above.
         model_kwargs={
             "frequency_penalty": float(os.getenv("GROQ_FREQUENCY_PENALTY", "0.3"))
         },
     )
+
+
+def _build_groq() -> Any | None:
+    return _build_groq_model("GROQ_MODEL", "openai/gpt-oss-120b")
+
+
+def _build_groq_alt() -> Any | None:
+    """Second Groq model, on its own daily quota."""
+    return _build_groq_model("GROQ_ALT_MODEL", "openai/gpt-oss-20b")
+
+
+def _build_groq_alt2() -> Any | None:
+    """Third Groq model, from a different family than the other two."""
+    return _build_groq_model("GROQ_ALT2_MODEL", "qwen/qwen3.8-27b")
 
 
 def _build_google(model_env: str, default_model: str) -> Any | None:
@@ -191,6 +225,8 @@ def _build_openrouter() -> Any | None:
 
 _PROVIDER_BUILDERS: dict[str, Any] = {
     "groq": _build_groq,
+    "groq-alt": _build_groq_alt,
+    "groq-alt2": _build_groq_alt2,
     "gemini": _build_gemini,
     "gemini-lite": _build_gemini_lite,
     "openrouter": _build_openrouter,
@@ -945,8 +981,35 @@ if _MCP_SCRIPT:
 
 # --- Tools ---
 _search_init_error: str | None = None
+
+
+def _build_search_tool() -> Any:
+    """
+    Web search, pinned to a few engines that actually answer.
+
+    ddgs defaults to backend="auto", which fans every query out across all
+    eight engines. On this host google and mojeek answer 403 and duckduckgo
+    returns a 202 challenge, so most of that fan-out is latency spent on
+    failures -- and it happens once per search, several times per turn.
+
+    `region` matters more than it looks: the "wt-wt" default is not a real
+    locale, so it built `hl=wt-WT&lr=lang_wt&cr=countryWT` (which is why google
+    403d) and `wt.wikipedia.org` (the repeated grokipedia ConnectErrors).
+    """
+    from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
+
+    backends = (os.getenv("SEARCH_BACKENDS") or "duckduckgo, brave, yahoo").strip()
+    return DuckDuckGoSearchRun(
+        api_wrapper=DuckDuckGoSearchAPIWrapper(
+            backend=backends,
+            region=(os.getenv("SEARCH_REGION") or "in-en").strip(),
+            max_results=int(os.getenv("SEARCH_MAX_RESULTS", "4")),
+        )
+    )
+
+
 try:
-    search: Any = DuckDuckGoSearchRun()
+    search: Any = _build_search_tool()
 except Exception as exc:
     _search_init_error = str(exc)
 

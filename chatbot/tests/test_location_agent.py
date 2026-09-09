@@ -1212,3 +1212,133 @@ def test_the_sanitizer_keeps_text_it_cannot_improve():
     # A collapse with no recovery has nothing better to offer, so the original
     # is preserved rather than blanking the reply.
     assert chatbot_backend.sanitize_degenerate_text(COLLAPSE) == COLLAPSE
+
+
+# --------------------------------------------------------------------------
+# Provider chain configuration
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def groq_key(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    for name in ("GROQ_MODEL", "GROQ_ALT_MODEL", "GROQ_ALT2_MODEL", "GROQ_MAX_RETRIES"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_groq_never_retries_internally(groq_key):
+    """
+    The regression guard for the latency fix.
+
+    The Groq SDK retries a 429 twice by default AND honours Retry-After up to
+    60 seconds, so a rate-limited request slept ~30s inside the client and
+    never raised -- the fallback chain was never reached. One measured turn
+    took 41s with 34s of it asleep. Retrying a *daily* quota cannot succeed,
+    so the only sane setting is zero: the chain is the retry strategy.
+    """
+    model = chatbot_backend._build_groq()
+
+    assert model.max_retries == 0
+    # A hung request must not stall the turn either.
+    assert model.request_timeout is not None
+
+
+def test_every_provider_fails_over_promptly(groq_key, monkeypatch):
+    """No link may sit and retry while the rest of the chain waits."""
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    for name, build in chatbot_backend._PROVIDER_BUILDERS.items():
+        model = build()
+        assert model is not None, name
+        assert getattr(model, "max_retries", 99) <= 1, (
+            f"{name} would stall the chain by retrying internally"
+        )
+
+
+def test_the_groq_links_are_three_distinct_models(groq_key):
+    """
+    Groq meters per model, so sibling links only help if they are different
+    models -- three links on one model would share one exhausted quota.
+    """
+    models = {
+        chatbot_backend._PROVIDER_BUILDERS[name]().model_name
+        for name in ("groq", "groq-alt", "groq-alt2")
+    }
+
+    assert len(models) == 3
+
+
+def test_the_groq_links_are_all_tried_before_another_provider(groq_key):
+    """Groq is the fastest option here; exhaust it before paying for distance."""
+    chain = chatbot_backend.DEFAULT_PROVIDER_CHAIN.split(",")
+
+    groq_links = [i for i, name in enumerate(chain) if name.startswith("groq")]
+    others = [i for i, name in enumerate(chain) if not name.startswith("groq")]
+
+    assert len(groq_links) == 3
+    assert max(groq_links) < min(others)
+
+
+def test_an_alt_model_can_be_overridden(groq_key, monkeypatch):
+    monkeypatch.setenv("GROQ_ALT_MODEL", "some/other-model")
+
+    assert chatbot_backend._build_groq_alt().model_name == "some/other-model"
+
+
+def test_no_groq_key_means_no_groq_links(monkeypatch):
+    """A missing key skips the link silently rather than breaking the chain."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    for name in ("groq", "groq-alt", "groq-alt2"):
+        assert chatbot_backend._PROVIDER_BUILDERS[name]() is None
+
+
+# Captured at import time, before the autouse guard replaces it with a raiser.
+# Building a chain is the thing under test here, so this one test needs the
+# real function back -- it still constructs clients without calling out.
+REAL_GET_LLM_CHAIN = chatbot_backend._get_llm_chain
+
+
+def test_an_unknown_provider_name_is_skipped(groq_key, monkeypatch):
+    """A typo in LLM_PROVIDER_CHAIN must not take the whole chain down."""
+    monkeypatch.setattr(chatbot_backend, "_get_llm_chain", REAL_GET_LLM_CHAIN)
+    monkeypatch.setenv("LLM_PROVIDER_CHAIN", "groq,nonsense-provider")
+    monkeypatch.setattr(chatbot_backend, "_llm_chain", None)
+
+    chain = chatbot_backend._get_llm_chain()
+
+    assert [name for name, _ in chain] == ["groq"]
+
+
+# --------------------------------------------------------------------------
+# Web search
+# --------------------------------------------------------------------------
+
+def test_search_is_pinned_to_specific_engines(monkeypatch):
+    """
+    ddgs's backend="auto" fans every query across all eight engines, most of
+    which fail on this host, once per search and several times per turn.
+    """
+    monkeypatch.delenv("SEARCH_BACKENDS", raising=False)
+    monkeypatch.delenv("SEARCH_REGION", raising=False)
+
+    wrapper = chatbot_backend._build_search_tool().api_wrapper
+
+    assert wrapper.backend != "auto"
+    assert "duckduckgo" in wrapper.backend
+    # "wt-wt" is not a real locale: it built hl=wt-WT and wt.wikipedia.org,
+    # which is where the google 403s and grokipedia ConnectErrors came from.
+    assert wrapper.region != "wt-wt"
+    assert wrapper.max_results <= 5
+
+
+def test_search_settings_are_configurable(monkeypatch):
+    monkeypatch.setenv("SEARCH_BACKENDS", "brave")
+    monkeypatch.setenv("SEARCH_REGION", "us-en")
+    monkeypatch.setenv("SEARCH_MAX_RESULTS", "2")
+
+    wrapper = chatbot_backend._build_search_tool().api_wrapper
+
+    assert wrapper.backend == "brave"
+    assert wrapper.region == "us-en"
+    assert wrapper.max_results == 2
