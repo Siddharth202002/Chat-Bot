@@ -6,6 +6,7 @@ import {
   postCoordinates,
   postLocationFailure,
   postManualCity,
+  isGeolocationGranted,
   requestBrowserPosition,
   type GeolocationFailure,
   type LocationStatus,
@@ -171,12 +172,13 @@ export function useUserLocation({
 
     // The user said no, or cannot say yes. Re-prompting is futile and rude;
     // LocationStatus offers the manual city input instead.
-    if (
-      statusRef.current === "denied" ||
-      statusRef.current === "unsupported" ||
-      // No amount of asking makes an http:// origin secure.
-      statusRef.current === "insecure"
-    ) {
+    // An insecure origin can never be fixed by asking, so it short-circuits
+    // unconditionally. A denial can be reversed by the user in site settings,
+    // so that one defers to the browser's own permission state.
+    if (statusRef.current === "unsupported" || statusRef.current === "insecure") {
+      return null;
+    }
+    if (statusRef.current === "denied" && (await isGeolocationGranted()) !== true) {
       return null;
     }
 
@@ -187,7 +189,15 @@ export function useUserLocation({
     // getCurrentPosition() again and re-raise the bubble, which is precisely the
     // re-prompt loop this hook exists to avoid. One automatic attempt per
     // session; after that the manual city input is the way forward.
-    if (statusRef.current === "error" && attemptedRef.current) return null;
+    // ...unless the browser has since granted permission. A retry then raises
+    // no prompt at all and resolves in ~2s, so the "never ask twice" rule --
+    // which exists purely to avoid nagging popups -- has nothing to protect
+    // against here. Without this, one first-run timeout (the popup outliving
+    // the timeout budget) left the feature permanently dead for the session
+    // even after the user clicked Allow.
+    if (statusRef.current === "error" && attemptedRef.current) {
+      if ((await isGeolocationGranted()) !== true) return null;
+    }
 
     // Two sends in quick succession must produce one prompt, not two.
     if (inFlightRef.current) return inFlightRef.current;

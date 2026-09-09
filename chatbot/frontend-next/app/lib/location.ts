@@ -238,10 +238,18 @@ export function needsLocation(text: string): boolean {
  * flag before awaiting a location, and the composer plus stop button are gated
  * on that flag — so this timeout is the floor of a dead-UI window that also
  * includes the backend's ~1.1s Nominatim rate limiter and the geocode round
- * trip. 10s put the worst case past 11s, which reads as a hung app; 8s keeps it
- * under. Long enough for a coarse network fix, short enough not to feel broken.
+ * trip.
+ *
+ * 25s looks generous for a lookup that takes ~2s once permission exists, but
+ * this budget is not spent on positioning -- it covers the permission prompt
+ * sitting open while the user decides. An 8s budget expired before a
+ * first-time user could click Allow, and the request came back TIMEOUT even
+ * though the browser was perfectly capable: measured 2s, 241m accuracy, the
+ * moment permission was granted. After that first grant `maximumAge` serves a
+ * cached fix instantly, so the long ceiling costs nothing in the common case
+ * and only buys time on the one request that actually needs it.
  */
-const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_TIMEOUT_MS = 25_000;
 
 /**
  * Promise wrapper around `getCurrentPosition`. Rejects with an `Error` whose
@@ -290,6 +298,27 @@ export function requestBrowserPosition(
       }
     );
   });
+}
+
+/**
+ * Whether the browser already holds geolocation permission.
+ *
+ * Returns null when it cannot be determined (older browsers, or a Permissions
+ * API that does not know the "geolocation" name) so callers can tell "no" from
+ * "don't know". Used to decide whether retrying is worth it: once permission is
+ * granted a retry raises NO prompt and resolves in about two seconds, so the
+ * usual "never ask twice" rule should not apply to it.
+ */
+export async function isGeolocationGranted(): Promise<boolean | null> {
+  try {
+    if (typeof navigator === "undefined" || !navigator.permissions?.query) return null;
+    const status = await navigator.permissions.query({
+      name: "geolocation" as PermissionName,
+    });
+    return status.state === "granted";
+  } catch {
+    return null;
+  }
 }
 
 /* ── API client ─────────────────────────────────────────────────── */
