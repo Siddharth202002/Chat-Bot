@@ -936,7 +936,6 @@ export default function Home() {
             location={userLocation}
             message={locationMessage}
             onSubmitCity={submitManualCity}
-            onRequest={ensureLocation}
             onClear={clearLocation}
             onDismiss={dismissLocation}
           />
@@ -952,6 +951,8 @@ export default function Home() {
           onStopGenerating={handleStopGenerating}
           onAttach={openPdfPicker}
           onDropPdf={uploadPdf}
+          onRequestLocation={ensureLocation}
+          locationLabel={userLocation?.label ?? null}
           textareaRef={composerRef}
         />
 

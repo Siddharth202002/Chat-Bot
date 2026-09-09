@@ -11,7 +11,6 @@ interface LocationStatusProps {
   location: UserLocation | null;
   message: string | null;
   onSubmitCity: (city: string) => void;
-  onRequest: () => void;
   onClear: () => void;
   onDismiss: () => void;
 }
@@ -38,7 +37,6 @@ export default function LocationStatus({
   location,
   message,
   onSubmitCity,
-  onRequest,
   onClear,
   onDismiss,
 }: LocationStatusProps) {
@@ -48,31 +46,11 @@ export default function LocationStatus({
 
   if (status === "ready" && !location) return null;
 
-  // Idle used to render nothing, which meant the ONLY way to share a location
-  // was for needsLocation() to correctly parse the user's sentence. A typo or
-  // an unusual phrasing left them with no control at all and an assistant
-  // insisting it could not find them. This is the manual escape hatch.
-  if (status === "idle") {
-    return (
-      <div className="w-full shrink-0 px-4 sm:px-6 lg:px-8">
-        <div className="mx-auto flex w-full max-w-3xl items-center gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onRequest}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5",
-              "text-micro text-fg-subtle",
-              "transition-colors duration-150 ease-standard",
-              "hover:bg-hover hover:text-fg"
-            )}
-          >
-            <MapPin className="h-3 w-3 shrink-0" strokeWidth={1.75} aria-hidden />
-            Use my location
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // Idle renders nothing: the entry point is the composer's attach menu,
+  // so a permanent strip above the input bar would just be clutter. This
+  // component now only speaks up while something is happening or has
+  // gone wrong.
+  if (status === "idle") return null;
 
   const isFailure =
     status === "denied" ||

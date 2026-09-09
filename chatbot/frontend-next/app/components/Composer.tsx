@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/app/lib/utils";
-import { ArrowUp, Paperclip, Square } from "lucide-react";
+import { ArrowUp, FileText, MapPin, Paperclip, Square } from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -24,6 +24,9 @@ interface ComposerProps {
   onStopGenerating: () => void;
   onAttach: () => void;
   onDropPdf: (file: File) => void;
+  onRequestLocation: () => void;
+  /** The resolved place, shown next to the location item once it is known. */
+  locationLabel?: string | null;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
 }
 
@@ -44,10 +47,14 @@ export default function Composer({
   onStopGenerating,
   onAttach,
   onDropPdf,
+  onRequestLocation,
+  locationLabel,
   textareaRef,
 }: ComposerProps) {
   const [isDragging, setIsDragging] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const dragDepth = useRef(0);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const canSend = input.trim().length > 0 && !isLoading && !isUploadingPdf;
 
@@ -58,6 +65,29 @@ export default function Composer({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
   }, [input, textareaRef]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    function onPointerDown(event: MouseEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    }
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
+
+  function runMenuAction(action: () => void) {
+    setMenuOpen(false);
+    action();
+  }
 
   function handleSend() {
     if (!canSend) return;
@@ -157,15 +187,67 @@ export default function Composer({
               "focus-within:border-focus focus-within:shadow-focus"
             )}
           >
-            <IconButton
-              label={isUploadingPdf ? "Uploading PDF…" : "Attach a PDF"}
-              size="sm"
-              disabled={isUploadingPdf}
-              onClick={onAttach}
-              className="mb-0.5 rounded-full"
-            >
-              <Paperclip className="h-4 w-4" strokeWidth={1.75} />
-            </IconButton>
+            <div className="relative mb-0.5" ref={menuRef}>
+              <IconButton
+                label={isUploadingPdf ? "Uploading PDF…" : "Add location or a PDF"}
+                size="sm"
+                disabled={isUploadingPdf}
+                onClick={() => setMenuOpen((open) => !open)}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                className="rounded-full"
+              >
+                <Paperclip className="h-4 w-4" strokeWidth={1.75} />
+              </IconButton>
+
+              {menuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Attach"
+                  className={cn(
+                    "animate-fade-in absolute bottom-full left-0 z-30 mb-2 w-56",
+                    "overflow-hidden rounded-lg border border-line bg-overlay p-1 shadow-e3"
+                  )}
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runMenuAction(onRequestLocation)}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left",
+                      "text-small text-fg-muted",
+                      "transition-colors duration-150 ease-standard",
+                      "hover:bg-hover hover:text-fg"
+                    )}
+                  >
+                    <MapPin className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
+                    <span className="min-w-0 flex-1">
+                      Use my location
+                      {locationLabel && (
+                        <span className="block truncate text-micro text-fg-subtle">
+                          {locationLabel}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => runMenuAction(onAttach)}
+                    className={cn(
+                      "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left",
+                      "text-small text-fg-muted",
+                      "transition-colors duration-150 ease-standard",
+                      "hover:bg-hover hover:text-fg"
+                    )}
+                  >
+                    <FileText className="h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden />
+                    Upload a PDF
+                  </button>
+                </div>
+              )}
+            </div>
 
             <textarea
               ref={textareaRef}
