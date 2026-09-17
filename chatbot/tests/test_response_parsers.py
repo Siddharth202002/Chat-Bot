@@ -365,6 +365,66 @@ def test_a_truncated_reply_is_repaired_before_it_is_stored():
     assert finalized.startswith("Here are five laptops:")
 
 
+# --------------------------------------------------------------------------
+# A reply wrapped in a ```markdown fence
+# --------------------------------------------------------------------------
+
+# Exactly what a user reported seeing: the UI printed the language label
+# "Markdown", then the raw asterisks, then the closing fence.
+FENCED_GREETING = (
+    "```markdown\n"
+    "**Hi! I'm Zeno AI** – I can search the web, answer questions from PDFs "
+    "you upload, do math, fetch live stock prices, give you current weather for "
+    "any location, and analyse spending data.\n\n"
+    "How can I help you today?\n"
+    "```"
+)
+
+
+def test_a_reply_wrapped_in_a_markdown_fence_is_unwrapped():
+    """A fence says 'show this verbatim', so the whole answer rendered as code."""
+    result = chatbot_backend.finalize_text(FENCED_GREETING, "gemini")
+
+    assert not result.lstrip().startswith("```")
+    assert result.rstrip().endswith("How can I help you today?")
+    assert result.startswith("**Hi! I'm Zeno AI**")
+
+
+@pytest.mark.parametrize("tag", ["markdown", "md", "gfm", "MARKDOWN", "Markdown"])
+def test_every_markdown_fence_spelling_is_unwrapped(tag):
+    assert chatbot_backend.finalize_text(f"```{tag}\n**bold** text\n```") == "**bold** text"
+
+
+def test_an_unterminated_markdown_fence_is_unwrapped_too():
+    """Mid-stream, and on a reply cut off at the token ceiling, there is no closer."""
+    assert chatbot_backend.finalize_text("```markdown\n**bold** text") == "**bold** text"
+
+
+def test_a_real_code_block_is_never_unwrapped():
+    """```python is content the user asked for, not a wrapper to strip."""
+    code = "```python\ndef f(**kwargs):\n    return kwargs\n```"
+    assert chatbot_backend.finalize_text(code) == code
+
+
+def test_a_markdown_fence_around_only_part_of_the_reply_is_kept():
+    """The model demonstrating Markdown syntax means the fence literally."""
+    teaching = (
+        "Here is how to write bold text:\n\n```markdown\n**bold**\n```\n\nTry it."
+    )
+    assert chatbot_backend.finalize_text(teaching) == teaching
+
+
+def test_a_reply_that_merely_contains_a_markdown_fence_is_untouched():
+    nested = "```markdown\n**a**\n```\n\nand then some prose\n\n```markdown\n**b**\n```"
+    assert chatbot_backend.finalize_text(nested) == nested
+
+
+def test_the_format_policy_forbids_fencing_the_whole_reply():
+    """Belt and braces: the unwrap is the safety net, the prompt is the fix."""
+    policy = chatbot_backend.OUTPUT_FORMAT_POLICY.lower()
+    assert "do not wrap the reply in a code fence" in policy
+
+
 def test_the_provider_hook_table_is_keyed_like_the_builders():
     """
     Empty by design -- every quirk is fixed at its source -- but if something is

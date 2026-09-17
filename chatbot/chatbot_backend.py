@@ -1648,6 +1648,32 @@ def _close_dangling_markup(text: str) -> str:
 _PROVIDER_FINALIZERS: dict[str, Callable[[str], str]] = {}
 
 
+# "Answer in GitHub-flavoured Markdown" is read by some models as "emit a
+# Markdown code block", so the whole reply arrives wrapped in ```markdown. A
+# fence means "show this verbatim", so the UI renders it exactly as asked --
+# language label, literal ** and all -- and it reads as broken formatting.
+# Only an explicitly Markdown-tagged fence is unwrapped; ```python is content.
+_WHOLE_MESSAGE_MD_FENCE_RE = re.compile(
+    r"""\A\s*(?P<fence>`{3,}|~{3,})[ \t]*(?:markdown|md|gfm)[ \t]*\r?\n
+        (?P<body>.*?)
+        (?:\r?\n[ \t]*(?P=fence)[ \t]*)?\s*\Z""",
+    re.DOTALL | re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _unwrap_markdown_fence(text: str) -> str:
+    """Drop a ```markdown fence wrapped around the entire reply."""
+    match = _WHOLE_MESSAGE_MD_FENCE_RE.match(text)
+    if match is None:
+        return text
+    body = match.group("body")
+    # A fence around only part of the reply is the model quoting Markdown on
+    # purpose; unwrapping that would destroy what it meant to show.
+    if match.group("fence") in body:
+        return text
+    return body
+
+
 def finalize_text(text: str, provider: str | None = None) -> str:
     """
     Tidy a finished reply just before it is returned and stored.
@@ -1657,7 +1683,7 @@ def finalize_text(text: str, provider: str | None = None) -> str:
     """
     if not text:
         return text
-    cleaned = _RUNAWAY_SPACING_RE.sub(" ", text)
+    cleaned = _unwrap_markdown_fence(_RUNAWAY_SPACING_RE.sub(" ", text))
     hook = _PROVIDER_FINALIZERS.get(provider or "")
     if hook is not None:
         cleaned = hook(cleaned)
@@ -1693,6 +1719,10 @@ OUTPUT_FORMAT_POLICY = """Response format (follow this regardless of the topic):
 
 - Answer in GitHub-flavoured Markdown, and always structure the answer. Never
   reply with one undifferentiated paragraph when the content has parts.
+- Write the Markdown directly. Do NOT wrap the reply in a code fence: no
+  opening ```markdown and no closing ``` around the answer as a whole. A fence
+  means "show this verbatim", so the reader would see the raw asterisks instead
+  of bold text. Code fences are only for actual code samples inside the answer.
 - Recommending, comparing or listing several things (places, options, products,
   models): use a Markdown table. Put the item name in the first column and give
   each remaining attribute its own column. Number the rows when order or count

@@ -155,7 +155,40 @@ function danglingClosers(text: string): string {
 /**
  * `text` with any half-written markup closed off, for rendering mid-stream.
  */
+/**
+ * A ```markdown fence wrapped around the whole reply, removed.
+ *
+ * Some models read "answer in Markdown" as "emit a Markdown code block". A
+ * fence means "show this verbatim", so the reply renders as a code block --
+ * language label, literal `**` and all. Mid-stream the closing fence has not
+ * arrived yet, which is why this runs before the fence repair below: otherwise
+ * that repair would helpfully close it and lock in the code block.
+ *
+ * Only an explicitly Markdown-tagged fence is unwrapped; ```python is content.
+ */
+const WHOLE_MESSAGE_MD_FENCE =
+  /^\s*(`{3,}|~{3,})[ \t]*(?:markdown|md|gfm)[ \t]*\r?\n([\s\S]*?)(?:\r?\n[ \t]*\1[ \t]*)?\s*$/i;
+
+function unwrapMarkdownFence(text: string): string {
+  const match = WHOLE_MESSAGE_MD_FENCE.exec(text);
+  if (!match) return text;
+  const [, fence, body] = match;
+  // A fence around only part of the reply is the model quoting Markdown on
+  // purpose; unwrapping that would destroy what it meant to show.
+  if (body.includes(fence)) return text;
+  return body;
+}
+
 export function closeDanglingMarkup(text: string): string {
+  if (!text) return text;
+
+  // An opening fence line still being typed: "```", "```ma", "```markdown".
+  // Its language is not known until the newline lands, so there is nothing to
+  // decide yet -- and rendering it now flashes an empty code block for a few
+  // frames. Whatever it turns out to be arrives a moment later.
+  if (/^\s*(?:`{3,}|~{3,})[ \t]*[A-Za-z+#-]*[ \t]*$/.test(text)) return "";
+
+  text = unwrapMarkdownFence(text);
   if (!text) return text;
 
   const { isCode, openFence } = scanFences(text.split("\n"));
@@ -166,14 +199,37 @@ export function closeDanglingMarkup(text: string): string {
     return text.endsWith("\n") ? `${text}${openFence}` : `${text}\n${openFence}`;
   }
 
-  const kept = dropUnrenderableTableTail(text.split("\n"), isCode).join("\n");
+  const keptLines = dropUnrenderableTableTail(text.split("\n"), isCode);
+  const kept = keptLines.join("\n");
 
-  // Two things have to come off the tail first. A half-arrived marker run has
-  // nothing to wrap yet, and an empty `**` renders literally anyway; and a
-  // closer is only a closer when the character before it is not a space, so
+  // Two things have to come off the tail. A half-arrived marker run has nothing
+  // to wrap yet, and an empty `**` renders literally anyway; and a closer is
+  // only a closer when the character before it is not a space, so
   // `**Determine ` + `**` would still show all four asterisks. Trailing
   // whitespace comes back with the next token, so dropping it costs nothing.
-  const body = kept.replace(/[\s*~`]*$/, "");
+  //
+  // Unless the text ends on a closing fence, whose backticks are structure:
+  // stripping those turns a finished code block back into an open one.
+  const keptFlags = scanFences(keptLines).isCode;
+  let lastContent = -1;
+  for (let index = keptLines.length - 1; index >= 0; index--) {
+    if (keptLines[index].trim()) {
+      lastContent = index;
+      break;
+    }
+  }
+  const endsOnFence = lastContent >= 0 && keptFlags[lastContent];
+  const body = endsOnFence ? kept : kept.replace(/[\s*~`]*$/, "");
+  // Nothing but half-arrived markers so far -- show nothing rather than them.
+  if (!body) return "";
 
-  return body + danglingClosers(body);
+  // Emphasis is only counted outside fences: `def f(**kwargs)` in a Python
+  // block is a keyword-arguments splat, not an unclosed bold.
+  const bodyLines = body.split("\n");
+  const bodyFlags = scanFences(bodyLines).isCode;
+  const scannable = bodyLines
+    .map((line, index) => (bodyFlags[index] ? "" : line))
+    .join("\n");
+
+  return body + danglingClosers(scannable);
 }
