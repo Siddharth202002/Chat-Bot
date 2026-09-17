@@ -1050,11 +1050,15 @@ async def test_streaming_falls_back_when_the_primary_dies(monkeypatch):
     assert "".join(p for p in emitted if isinstance(p, str)) == "live answer"
 
 
-async def test_a_provider_dying_mid_stream_retracts_its_partial_text(monkeypatch):
+async def test_a_provider_dying_mid_stream_ends_the_turn(monkeypatch):
     """
-    Half an answer from Groq must not sit above a whole answer from Gemini, so
-    the partial text is retracted through the same channel the tool-preamble
-    fix uses.
+    Once text is on screen the turn belongs to that provider.
+
+    Retracting and failing over was the old behaviour, and it was wrong: the
+    client had already rendered "The weather is ", so the retraction made the
+    answer flicker away and a second provider rewrote it from the top. Worse,
+    the retraction only reached the client if the connection was still healthy.
+    Ending the turn and offering a retry is honest about what happened.
     """
     class HalfThenDie:
         def astream(self, messages):
@@ -1064,24 +1068,26 @@ async def test_a_provider_dying_mid_stream_retracts_its_partial_text(monkeypatch
 
             return gen()
 
+    secondary = _Answers("15 C and raining.")
     monkeypatch.setattr(
         chatbot_backend, "_get_llm_chain",
-        lambda: [("groq", HalfThenDie()), ("gemini", _Answers("15 C and raining."))],
+        lambda: [("groq", HalfThenDie()), ("gemini", secondary)],
     )
 
     app = _stream_reset_app()
-    emitted = [
-        item
+    emitted: list = []
+    with pytest.raises(chatbot_backend.ResponseInterrupted):
         async for item in chatbot_backend._get_response_stream_for_config(
             app, {"configurable": {"thread_id": "t"}}, "weather?"
-        )
-    ]
+        ):
+            emitted.append(item)
 
-    assert chatbot_backend.STREAM_RESET in emitted
-    reset_at = emitted.index(chatbot_backend.STREAM_RESET)
-    after = "".join(p for p in emitted[reset_at + 1:] if isinstance(p, str))
-    assert after == "15 C and raining."
-    assert "The weather is " not in after
+    # The partial text stays: it is real model output, and the user is told the
+    # reply was cut short rather than having it silently replaced.
+    assert "".join(p for p in emitted if isinstance(p, str)) == "The weather is "
+    assert chatbot_backend.STREAM_RESET not in emitted
+    # The next provider is never asked to continue someone else's sentence.
+    assert secondary.calls == 0
 
 
 def test_multi_block_content_is_flattened_for_users():

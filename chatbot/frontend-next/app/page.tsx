@@ -13,6 +13,7 @@ import ConfirmDialog from "./components/ui/ConfirmDialog";
 import { useToast } from "./components/ui/Toast";
 import { useUserLocation } from "./hooks/useUserLocation";
 import { needsLocation } from "./lib/location";
+import { closeDanglingMarkup } from "./lib/streamingMarkdown";
 import { useIsDesktop } from "./lib/useMediaQuery";
 
 interface RagStatusResponse {
@@ -108,6 +109,7 @@ export default function Home() {
   const rafRef = useRef<number | null>(null);
   /** Set when the SSE stream reports an error mid-flight. */
   const streamErrorRef = useRef<string | null>(null);
+  const interruptedRef = useRef(false);
 
   const resetChatState = useCallback(() => {
     if (abortControllerRef.current) {
@@ -476,6 +478,7 @@ export default function Home() {
         if (!res.body) throw new Error("No response body");
 
         streamErrorRef.current = null;
+        interruptedRef.current = false;
 
         // Add empty assistant message placeholder
         setMessages((prev) => [
@@ -550,10 +553,17 @@ export default function Home() {
                 if (!isStreaming) setIsStreaming(true);
                 scheduleUpdate();
               } else if (parsed.error) {
-                // Keep the text in the transcript for context, but flag it so
-                // it isn't mistaken for part of the answer.
-                accumulatedRef.current += "\n\n" + parsed.error;
                 streamErrorRef.current = String(parsed.error);
+                if (parsed.interrupted) {
+                  // A provider died part-way through. What already arrived is
+                  // genuine model output, so it stays as-is and the user is
+                  // offered a retry instead of a fabricated tail.
+                  interruptedRef.current = true;
+                } else {
+                  // Keep the text in the transcript for context, but flag it so
+                  // it isn't mistaken for part of the answer.
+                  accumulatedRef.current += "\n\n" + parsed.error;
+                }
                 scheduleUpdate();
               }
             } catch {
@@ -586,18 +596,27 @@ export default function Home() {
           rafRef.current = null;
         }
 
-        // Final flush
+        // Final flush. A reply cut off at the token ceiling, or one ended by an
+        // interruption, can stop mid-`**bold**`; the backend closes the copy it
+        // stores, and this closes the copy on screen so the two agree.
+        const finalContent = closeDanglingMarkup(accumulatedRef.current);
         setMessages((prev) => {
           const updated = [...prev];
           const lastIdx = updated.length - 1;
           if (updated[lastIdx]?.id === assistantId) {
             updated[lastIdx] = {
               ...updated[lastIdx],
-              content: accumulatedRef.current,
+              content: finalContent,
             };
           }
           return updated;
         });
+
+        if (interruptedRef.current) {
+          // Half an answer is on screen and it is not going to finish, so give
+          // the user the one-click retry rather than leaving them to retype.
+          setFailedMessage(text.trim());
+        }
       } catch (err) {
         if ((err as Error).name === "AbortError") {
           // Stream was cancelled by user — keep what we have
@@ -615,8 +634,14 @@ export default function Home() {
         setIsLoading(false);
         setIsStreaming(false);
         if (streamErrorRef.current) {
-          toast("error", "The assistant hit an error while replying.");
+          toast(
+            "error",
+            interruptedRef.current
+              ? "The reply was cut short. Tap retry to ask again."
+              : "The assistant hit an error while replying."
+          );
           streamErrorRef.current = null;
+          interruptedRef.current = false;
         }
       }
     },

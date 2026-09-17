@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/app/lib/utils";
+import { closeDanglingMarkup } from "@/app/lib/streamingMarkdown";
 import { Check, Copy, Sparkles } from "lucide-react";
 import { memo, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -210,7 +211,10 @@ function MessageBubbleInner({ message, index, isStreaming = false }: MessageBubb
         >
           {contentStr ? (
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
-              {contentStr}
+              {/* Mid-stream the buffer is usually cut mid-token, so the
+                  half-written markup is closed for display only -- see
+                  closeDanglingMarkup. The stored message is never touched. */}
+              {isStreaming ? closeDanglingMarkup(contentStr) : contentStr}
             </ReactMarkdown>
           ) : null}
         </div>

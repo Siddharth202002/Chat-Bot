@@ -16,7 +16,7 @@ import secrets
 from datetime import datetime
 from pathlib import Path
 from time import time
-from typing import Annotated, Any, AsyncGenerator, TypedDict
+from typing import Annotated, Any, AsyncGenerator, Callable, NamedTuple, TypedDict
 
 import aiosqlite
 import requests
@@ -82,7 +82,13 @@ _llm_chain: list[tuple[str, Any]] | None = None
 # Groq first and three times over: its models are the fastest available here
 # and each carries its own daily quota, so the chain exhausts them before
 # paying the latency of another provider.
-DEFAULT_PROVIDER_CHAIN = "groq,groq-alt,groq-alt2,gemini,gemini-lite,openrouter"
+#
+# openrouter is deliberately absent. Its free model folds a full chain-of-thought
+# into `content` -- a measured 8,888 characters of "**Analyze User Input:**"
+# for a one-line question, quoting OUTPUT_FORMAT_POLICY back at the user -- and
+# unlike Groq it offers no server-side switch to suppress it. The builder is
+# kept, so setting LLM_PROVIDER_CHAIN re-enables it deliberately.
+DEFAULT_PROVIDER_CHAIN = "groq,groq-alt,groq-alt2,gemini,gemini-lite"
 
 # Shown to the user when the whole chain is exhausted. Raw provider errors
 # ("402 payment_required", quota JSON) mean nothing to them and leak billing
@@ -93,8 +99,28 @@ ALL_PROVIDERS_MESSAGE = (
 )
 
 
+# Sent when a turn dies after text is already on screen. The half answer stays
+# -- it is real model output -- but the turn is not silently handed to another
+# provider, which would append a second answer to the first.
+INTERRUPTED_MESSAGE = "That response was interrupted. Please try again."
+
+
 class AllProvidersUnavailable(RuntimeError):
     """Every provider in the chain refused the turn."""
+
+
+class ResponseInterrupted(RuntimeError):
+    """A turn failed after some of its text had already reached the client."""
+
+
+class DegenerateResponse(RuntimeError):
+    """
+    A provider collapsed into runaway non-prose output.
+
+    Raised rather than filtered: the collapse is a property of the provider's
+    sampling that turn, so the next provider in the chain is the fix. It is
+    internal and never reaches the user.
+    """
 
 
 def _provider_chain_names() -> list[str]:
@@ -113,8 +139,16 @@ def _temperature() -> float:
 
 
 def _max_tokens() -> int:
-    """A hard ceiling so a runaway repetition loop stays bounded."""
-    return int(os.getenv("GROQ_MAX_TOKENS", "2048"))
+    """
+    A hard ceiling so a runaway repetition loop stays bounded.
+
+    Shared by every provider (Groq's max_tokens, Gemini's max_output_tokens,
+    OpenRouter's max_tokens), so one value covers the chain. 2048 was too tight:
+    a five-row comparison table with a sentence per cell runs past it and the
+    reply gets cut mid-``**bold**``, which is where the permanently unclosed
+    asterisks in stored messages came from.
+    """
+    return int(os.getenv("GROQ_MAX_TOKENS", "4096"))
 
 
 def _build_groq_model(model_env: str, default_model: str) -> Any | None:
@@ -143,6 +177,12 @@ def _build_groq_model(model_env: str, default_model: str) -> Any | None:
         max_retries=int(os.getenv("GROQ_MAX_RETRIES", "0")),
         # A hung request must not stall the turn either.
         request_timeout=float(os.getenv("GROQ_TIMEOUT", "30")),
+        # Keep the chain-of-thought out of `content`. Without this, gpt-oss and
+        # qwen3 fold their reasoning into the answer -- the user gets a wall of
+        # "**Analyze User Input:**" bullets, sometimes quoting this very prompt
+        # back at them, before the real reply. "hidden" drops it server-side, so
+        # there is nothing to strip client-side and nothing billed to display.
+        reasoning_format="hidden",
         # Suppresses the repetition loops described above.
         model_kwargs={
             "frequency_penalty": float(os.getenv("GROQ_FREQUENCY_PENALTY", "0.3"))
@@ -1469,6 +1509,161 @@ def sanitize_degenerate_text(text: str) -> str:
     return result if result.strip() else text
 
 
+# Runs of spacing this long are never prose. Gemini pads markdown table cells to
+# align them and has been measured emitting 15,000 consecutive spaces on one
+# line, which both breaks the table and is what a truncated reply spends its
+# last tokens on.
+_RUNAWAY_SPACING_RE = re.compile(r"[ \t  ​]{40,}")
+
+# Emphasis markers worth repairing, longest first so "**" wins over "*".
+# "_" is left alone: snake_case identifiers would trip it constantly.
+_PAIRED_MARKERS = ("~~", "**", "*")
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+class _FenceScan(NamedTuple):
+    flags: list[bool]  # per line: is this line part of a fenced code block?
+    open_fence: str | None  # the fence still open at the end, if any
+
+
+def _fenced_lines(lines: list[str]) -> _FenceScan:
+    """Which lines belong to a fenced code block, and whether one is still open."""
+    flags: list[bool] = []
+    fence: str | None = None
+    for line in lines:
+        match = _FENCE_RE.match(line)
+        if fence is not None:
+            flags.append(True)
+            if (
+                match
+                and match.group(1)[0] == fence[0]
+                and len(match.group(1)) >= len(fence)
+            ):
+                fence = None
+        elif match:
+            flags.append(True)
+            fence = match.group(1)
+        else:
+            flags.append(False)
+    return _FenceScan(flags, fence)
+
+
+def _close_dangling_markup(text: str) -> str:
+    """
+    Close emphasis, inline code and fences the model left open.
+
+    A reply cut off at max_tokens routinely ends mid-``**bold**``, and the
+    unmatched marker then renders as literal asterisks in the stored message
+    forever. The frontend does the same repair live while streaming; this is the
+    version that runs once on the text that actually gets saved.
+    """
+    if not text:
+        return text
+
+    lines = text.split("\n")
+    in_fence = _fenced_lines(lines)
+
+    # An unterminated fence first: everything inside it is literal, so there is
+    # no point balancing emphasis that only looks unbalanced.
+    if in_fence.open_fence:
+        return text if text.endswith("\n") else f"{text}\n{in_fence.open_fence}"
+
+    # A trailing marker run has nothing to wrap, and a closer sitting after a
+    # space is not a closer at all, so both come off before balancing -- unless
+    # the text ends on a closing fence, whose backticks are structure.
+    last_content = next(
+        (index for index in reversed(range(len(lines))) if lines[index].strip()),
+        None,
+    )
+    ends_on_fence = last_content is not None and in_fence.flags[last_content]
+    text = text if ends_on_fence else re.sub(r"[\s*~`]*$", "", text)
+    if not text:
+        return ""
+
+    # Emphasis is only scanned outside fences: `def f(**kwargs)` in a Python
+    # block is a keyword-arguments splat, not an unclosed bold.
+    lines = text.split("\n")
+    flags = _fenced_lines(lines).flags
+    body = "\n".join(
+        "" if flag else line for line, flag in zip(lines, flags)
+    )
+    if not body.strip():
+        return text
+
+    stack: list[str] = []
+    index = 0
+    at_line_start = True
+    while index < len(body):
+        char = body[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "\n":
+            at_line_start = True
+            index += 1
+            continue
+        if char == "`":
+            run = 0
+            while body[index + run : index + run + 1] == "`":
+                run += 1
+            closer = re.search(rf"(?<!`)`{{{run}}}(?!`)", body[index + run :])
+            if closer is None:
+                return text + "`" * run + "".join(reversed(stack))
+            index += run + closer.end()
+            at_line_start = False
+            continue
+        if char in "*~":
+            # "* item" is a bullet and "***" a rule; neither is emphasis.
+            if at_line_start and char == "*" and re.match(r"\*+\s", body[index:]):
+                index += 1
+                at_line_start = False
+                continue
+            marker = next(
+                (m for m in _PAIRED_MARKERS if body.startswith(m, index)), None
+            )
+            if marker:
+                following = body[index + len(marker) : index + len(marker) + 1]
+                preceding = body[index - 1 : index]
+                # CommonMark flanking: an opener is not followed by a space, a
+                # closer not preceded by one.
+                if preceding and not preceding.isspace() and stack and stack[-1] == marker:
+                    stack.pop()
+                elif following and not following.isspace():
+                    stack.append(marker)
+                index += len(marker)
+                at_line_start = False
+                continue
+        if not char.isspace():
+            at_line_start = False
+        index += 1
+
+    return text + "".join(reversed(stack))
+
+
+# Escape hatch for a quirk that cannot be fixed at its source. Keyed by the same
+# names as _PROVIDER_BUILDERS. Empty on purpose: Groq's reasoning is suppressed
+# server-side via reasoning_format, Gemini's thought parts are dropped in
+# _content_pieces, and the provider whose reasoning could only have been removed
+# by guesswork was taken out of the chain instead.
+_PROVIDER_FINALIZERS: dict[str, Callable[[str], str]] = {}
+
+
+def finalize_text(text: str, provider: str | None = None) -> str:
+    """
+    Tidy a finished reply just before it is returned and stored.
+
+    Shared by the streaming and non-streaming paths so a saved message looks the
+    same either way.
+    """
+    if not text:
+        return text
+    cleaned = _RUNAWAY_SPACING_RE.sub(" ", text)
+    hook = _PROVIDER_FINALIZERS.get(provider or "")
+    if hook is not None:
+        cleaned = hook(cleaned)
+    return _close_dangling_markup(cleaned)
+
+
 class _StreamReset:
     """
     Yielded when text already streamed this turn must be discarded.
@@ -2124,8 +2319,14 @@ async def get_response(user_input: str, thread_id: str = "1", user_id: str = "")
             {"messages": [HumanMessage(content=user_input)]},
             config=config,
         )
-        return sanitize_degenerate_text(
-            _message_text(response["messages"][-1].content)
+        # sanitize_degenerate_text stays on this path only: there is no provider
+        # chain to hand the turn to here, so removing a collapse in place is
+        # still better than returning it. finalize_text then does the cleanup
+        # both paths share.
+        return finalize_text(
+            sanitize_degenerate_text(
+                _message_text(response["messages"][-1].content)
+            )
         )
     finally:
         _active_memories.reset(memory_token)
@@ -2162,7 +2363,15 @@ async def get_response_stream(
 
 
 def _content_pieces(content: Any) -> list[str]:
-    """Flatten a chunk's content into displayable text pieces."""
+    """
+    Flatten a chunk's content into displayable text pieces.
+
+    Gemini returns content as a list of parts, and a part carrying the model's
+    private reasoning has a "text" field just like a real answer part does.
+    Matching on the presence of "text" therefore leaked thoughts to the user, so
+    the type is checked instead: only an explicit "text" part is shown, and any
+    shape this does not recognise is dropped rather than guessed at.
+    """
     if isinstance(content, str):
         return [content] if content else []
     if isinstance(content, list):
@@ -2170,8 +2379,13 @@ def _content_pieces(content: Any) -> list[str]:
         for item in content:
             if isinstance(item, str) and item:
                 pieces.append(item)
-            elif isinstance(item, dict) and item.get("text"):
-                pieces.append(str(item["text"]))
+            elif isinstance(item, dict) and item.get("type") == "text":
+                # A thought part can also be flagged rather than typed.
+                if item.get("thought") or item.get("thought_signature"):
+                    continue
+                text = item.get("text")
+                if text:
+                    pieces.append(str(text))
         return pieces
     return []
 
@@ -2205,6 +2419,12 @@ async def _get_response_stream_for_config(
     working_messages = _messages_for_model([*prior_messages, *delta_messages])
     provider_chain = _get_llm_chain()
     emitted_any_text = False
+    # Characters currently on the user's screen for this turn. STREAM_RESET
+    # takes them back, so this drops to zero with it. Failing over to another
+    # provider is only safe while this is zero -- past that, the next provider
+    # would write a second answer underneath the first.
+    streamed_live = 0
+    answered_by: str | None = None
 
     # The location/weather policy asks for a mandatory two-tool chain, and
     # LOCATION_NOT_AVAILABLE is a state a model may keep retrying against, so
@@ -2218,10 +2438,10 @@ async def _get_response_stream_for_config(
         last_error: Exception | None = None
         output_filter = _DegenerateOutputFilter()
 
-        # Try each provider until one streams the round. A provider that fails
-        # part-way through gets its partial text retracted first, so the user
-        # never sees half an answer from Groq followed by a whole one from
-        # Gemini -- the same retraction channel the tool-preamble fix uses.
+        # Try each provider until one streams the round. Falling back is only
+        # allowed while nothing is on screen: once the user is reading text, a
+        # second provider cannot continue the first one's sentence, so the turn
+        # is ended with an error instead of being silently restarted.
         for index, (provider_name, model) in enumerate(provider_chain):
             streamed_chunk = None
             streamed_this_round = 0
@@ -2244,42 +2464,78 @@ async def _get_response_stream_for_config(
                     for piece in _content_pieces(chunk.content):
                         text, retract = output_filter.feed(piece)
                         if retract:
-                            # The model has collapsed into a repetition loop.
-                            # Take back the junk already on screen; whatever it
-                            # produces once it recovers becomes the answer.
-                            logger.warning(
-                                "Discarding a degenerate model response and "
-                                "waiting for it to recover."
+                            # Waiting for the model to recover was tried and is
+                            # worse: Gemini's collapse is 15k characters of
+                            # padding that never recovers, and the recovered
+                            # fragment is a half table nobody can read. Give the
+                            # turn to the next provider instead.
+                            raise DegenerateResponse(
+                                f"{provider_name} collapsed into non-prose output"
                             )
-                            if streamed_this_round:
-                                yield STREAM_RESET
-                                streamed_this_round = 0
                         if not text:
                             continue
                         streamed_this_round += len(text)
+                        streamed_live += len(text)
                         emitted_any_text = True
                         yield text
                 last_error = None
+                answered_by = provider_name
                 break
             except Exception as exc:
                 last_error = exc
+                degenerate = isinstance(exc, DegenerateResponse)
+
+                if degenerate and streamed_this_round == streamed_live:
+                    # A collapse is only detectable once a couple of hundred
+                    # characters of it have gone by, so this provider's opening
+                    # text -- Gemini's bare table header, say -- is already on
+                    # screen. It is retractable, though: we noticed, the stream
+                    # is still healthy, and everything showing came from this
+                    # provider, so the client can be put back to empty and the
+                    # turn handed on. That is different from a provider that
+                    # crashed, where the connection itself is suspect.
+                    if streamed_this_round:
+                        yield STREAM_RESET
+                        streamed_this_round = 0
+                        streamed_live = 0
+
+                if streamed_live:
+                    logger.warning(
+                        "Chat provider %s failed after %s characters were already "
+                        "streamed (%s: %s). Ending the turn rather than failing "
+                        "over, which would append a second answer.",
+                        provider_name,
+                        streamed_live,
+                        type(exc).__name__,
+                        str(exc)[:200],
+                    )
+                    raise ResponseInterrupted(INTERRUPTED_MESSAGE) from exc
+
                 remaining = len(provider_chain) - index - 1
                 logger.warning(
-                    "Chat provider %s failed mid-stream (%s: %s).%s",
+                    "Chat provider %s %s (%s: %s).%s",
                     provider_name,
+                    "produced degenerate output" if degenerate else "failed mid-stream",
                     type(exc).__name__,
                     str(exc)[:200],
                     f" Falling back to {provider_chain[index + 1][0]}."
                     if remaining
-                    else "",
+                    else " No providers left.",
                 )
+                # Nothing is on screen, but this provider's opening tokens may
+                # have been shown and retracted already; make sure the client is
+                # clean before the next one starts.
                 if streamed_this_round:
                     yield STREAM_RESET
+                    streamed_this_round = 0
                 if not remaining:
                     raise AllProvidersUnavailable(ALL_PROVIDERS_MESSAGE) from exc
 
         if last_error is not None:
             raise AllProvidersUnavailable(ALL_PROVIDERS_MESSAGE) from last_error
+
+        if answered_by is not None:
+            logger.info("Chat round answered by provider %s.", answered_by)
 
         if streamed_chunk is None:
             break
@@ -2292,11 +2548,22 @@ async def _get_response_stream_for_config(
             # back, or it lands in the transcript ahead of the real answer.
             if streamed_this_round:
                 yield STREAM_RESET
+                # The client drops its whole buffer on a reset, so the screen is
+                # empty again and failing over is safe once more.
+                streamed_live = 0
             # Drop it from history too. The tool_calls are kept (they pair with
             # the ToolMessages), but the text must not persist: on the next
             # round the model reads it back, sees its own broken output and
             # apologises for it instead of just answering.
             ai_message = ai_message.model_copy(update={"content": ""})
+        else:
+            # The answer round. What was streamed went out raw (the client
+            # repairs half-written markup as it renders), but the copy saved
+            # here is the one reloaded forever after, so it gets closed off --
+            # a reply stopped at max_tokens otherwise keeps its dangling ``**``.
+            finished = finalize_text(_message_text(ai_message.content), answered_by)
+            if finished != ai_message.content:
+                ai_message = ai_message.model_copy(update={"content": finished})
 
         delta_messages.append(ai_message)
         working_messages.append(ai_message)

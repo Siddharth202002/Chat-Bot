@@ -34,6 +34,7 @@ from chatbot_backend import (
     AllProvidersUnavailable,
     AuthError,
     ForbiddenError,
+    ResponseInterrupted,
     JWT_COOKIE_NAME,
     JWT_EXP_SECONDS,
     UserExistsError,
@@ -430,6 +431,12 @@ async def chat_stream(
                     continue
                 yield f"data: {json.dumps({'token': token})}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
+        except ResponseInterrupted as e:
+            # The turn died with part of the answer already on screen. That text
+            # is real model output, so it stays; the client just needs to know
+            # the answer is incomplete and offer a retry.
+            logging.getLogger("chatbot.api").warning("Chat stream interrupted: %s", e)
+            yield f"data: {json.dumps({'error': str(e), 'interrupted': True})}\n\n"
         except AllProvidersUnavailable as e:
             # Same reasoning as the non-streaming path: the provider's raw
             # quota/billing text stays in the log, the user gets plain English.
