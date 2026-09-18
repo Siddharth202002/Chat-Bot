@@ -785,7 +785,10 @@ async def test_the_streaming_tool_loop_is_bounded(monkeypatch):
     # The turn closes with a real assistant message rather than a dangling
     # tool call.
     assert isinstance(app.written["messages"][-1], AIMessage)
-    assert tokens[-1].strip()
+    # The stream's trailing markers (message ids) are not text; the last thing
+    # the user actually sees is.
+    text_tokens = [token for token in tokens if isinstance(token, str)]
+    assert text_tokens[-1].strip()
 
 
 # --------------------------------------------------------------------------

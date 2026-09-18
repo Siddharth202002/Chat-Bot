@@ -16,6 +16,12 @@ interface ChatAreaProps {
   /** Text of a send that failed, so the turn can be retried in place. */
   failedMessage: string | null;
   onRetry: () => void;
+  /** Client id of the user message currently open in the inline editor. */
+  editingId: string | null;
+  onStartEdit: (message: Message) => void;
+  onCancelEdit: () => void;
+  onSubmitEdit: (message: Message, text: string) => void;
+  onRegenerate: (message: Message) => void;
 }
 
 /** Placeholder turns shown while an existing thread is being fetched. */
@@ -48,6 +54,11 @@ export default function ChatArea({
   isLoadingHistory,
   failedMessage,
   onRetry,
+  editingId,
+  onStartEdit,
+  onCancelEdit,
+  onSubmitEdit,
+  onRegenerate,
 }: ChatAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [userScrolledUp, setUserScrolledUp] = useState(false);
@@ -158,6 +169,15 @@ export default function ChatArea({
                           msg.role === "assistant" &&
                           msg.id === messages[messages.length - 1]?.id
                         }
+                        // Rewriting history needs the stored id, and needs the
+                        // thread to be idle: a fork while a turn is in flight
+                        // is the one thing the server refuses outright.
+                        canBranch={Boolean(msg.serverId) && !isLoading}
+                        isEditing={editingId === msg.id}
+                        onStartEdit={onStartEdit}
+                        onCancelEdit={onCancelEdit}
+                        onSubmitEdit={onSubmitEdit}
+                        onRetry={onRegenerate}
                       />
                     ))}
 

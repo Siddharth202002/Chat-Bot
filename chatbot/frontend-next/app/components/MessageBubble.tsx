@@ -2,15 +2,25 @@
 
 import { cn } from "@/app/lib/utils";
 import { closeDanglingMarkup } from "@/app/lib/streamingMarkdown";
-import { Check, Copy, Sparkles } from "lucide-react";
-import { memo, useState } from "react";
+import { Check, Copy, Pencil, RotateCcw, Sparkles } from "lucide-react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import Button from "./ui/Button";
 
 export interface Message {
   id: string;
+  /**
+   * The id this message has in the stored conversation, once it is known.
+   *
+   * `id` is a client-side key that exists from the moment a bubble is
+   * rendered; this is the handle the server uses to locate the turn, and it
+   * only arrives when the turn is committed. Editing and retrying are
+   * unavailable until then.
+   */
+  serverId?: string | null;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
@@ -20,6 +30,13 @@ interface MessageBubbleProps {
   message: Message;
   index: number;
   isStreaming?: boolean;
+  /** False while a turn is in flight, or before the message has a server id. */
+  canBranch?: boolean;
+  isEditing?: boolean;
+  onStartEdit?: (message: Message) => void;
+  onCancelEdit?: () => void;
+  onSubmitEdit?: (message: Message, text: string) => void;
+  onRetry?: (message: Message) => void;
 }
 
 const LANGUAGE_LABELS: Record<string, string> = {
@@ -101,6 +118,118 @@ function CopyButton({
   );
 }
 
+/** Edit and Retry, styled to sit beside CopyButton without looking bolted on. */
+function ActionButton({
+  label,
+  icon: Icon,
+  onClick,
+  disabled,
+}: {
+  label: string;
+  icon: typeof Pencil;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-micro font-medium",
+        "text-fg-subtle transition-colors duration-150 hover:bg-hover hover:text-fg",
+        "disabled:pointer-events-none disabled:text-fg-faint"
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
+    </button>
+  );
+}
+
+/* ── Inline editor for a user message ───────────────────────────── */
+
+function MessageEditor({
+  initialValue,
+  onCancel,
+  onSubmit,
+}: {
+  initialValue: string;
+  onCancel: () => void;
+  onSubmit: (text: string) => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const [submitted, setSubmitted] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Open with the caret at the end of the existing text, the way a rename
+  // field does — selecting all of it invites an accidental overwrite.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, []);
+
+  // Grow with the content rather than scrolling a three-line box.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
+  }, [value]);
+
+  const trimmed = value.trim();
+  const canSubmit = trimmed.length > 0 && !submitted;
+
+  function submit() {
+    if (!canSubmit) return;
+    // A double Enter, or Enter racing the Save click, would otherwise fork
+    // the conversation twice.
+    setSubmitted(true);
+    onSubmit(trimmed);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+    }
+  }
+
+  return (
+    <div className="w-full rounded-lg border border-accent-muted/40 bg-accent-subtle px-3 py-2.5">
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={handleKeyDown}
+        disabled={submitted}
+        rows={1}
+        aria-label="Edit your message"
+        className={cn(
+          "w-full resize-none bg-transparent text-body text-fg outline-none",
+          "placeholder:text-fg-faint disabled:text-fg-muted"
+        )}
+      />
+      <div className="mt-2 flex items-center justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onCancel} disabled={submitted}>
+          Cancel
+        </Button>
+        <Button variant="primary" size="sm" onClick={submit} disabled={!canSubmit}>
+          {submitted ? "Sending…" : "Send"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /* ── Markdown renderer ──────────────────────────────────────────── */
 
 // GitHub-Flavoured Markdown: tables, strikethrough, task lists, autolinks.
@@ -166,7 +295,17 @@ const markdownComponents = {
 
 /* ── Message ────────────────────────────────────────────────────── */
 
-function MessageBubbleInner({ message, index, isStreaming = false }: MessageBubbleProps) {
+function MessageBubbleInner({
+  message,
+  index,
+  isStreaming = false,
+  canBranch = false,
+  isEditing = false,
+  onStartEdit,
+  onCancelEdit,
+  onSubmitEdit,
+  onRetry,
+}: MessageBubbleProps) {
   const isUser = message.role === "user";
   const contentStr = String(message.content || "");
 
@@ -176,9 +315,23 @@ function MessageBubbleInner({ message, index, isStreaming = false }: MessageBubb
   });
 
   if (isUser) {
+    if (isEditing) {
+      return (
+        <div className="flex justify-end">
+          <div className="flex w-full max-w-[85%] flex-col items-end sm:max-w-[75%]">
+            <MessageEditor
+              initialValue={contentStr}
+              onCancel={() => onCancelEdit?.()}
+              onSubmit={(text) => onSubmitEdit?.(message, text)}
+            />
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div
-        className="animate-rise flex justify-end"
+        className="animate-rise group flex justify-end"
         style={{ animationDelay: `${Math.min(index, 6) * 30}ms` }}
       >
         <div className="flex max-w-[85%] flex-col items-end sm:max-w-[75%]">
@@ -187,7 +340,18 @@ function MessageBubbleInner({ message, index, isStreaming = false }: MessageBubb
               {contentStr}
             </ReactMarkdown>
           </div>
-          <time className="mt-1 pr-1 text-micro text-fg-faint">{time}</time>
+          <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+            <time className="pr-1 text-micro text-fg-faint">{time}</time>
+            <CopyButton text={contentStr} label="Copy message" />
+            {onStartEdit && (
+              <ActionButton
+                label="Edit message"
+                icon={Pencil}
+                disabled={!canBranch}
+                onClick={() => onStartEdit(message)}
+              />
+            )}
+          </div>
         </div>
       </div>
     );
@@ -223,6 +387,14 @@ function MessageBubbleInner({ message, index, isStreaming = false }: MessageBubb
         {!isStreaming && contentStr && (
           <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
             <CopyButton text={contentStr} label="Copy response" />
+            {onRetry && (
+              <ActionButton
+                label="Regenerate response"
+                icon={RotateCcw}
+                disabled={!canBranch}
+                onClick={() => onRetry(message)}
+              />
+            )}
             <time className="text-micro text-fg-faint">{time}</time>
           </div>
         )}
@@ -235,6 +407,10 @@ function MessageBubbleInner({ message, index, isStreaming = false }: MessageBubb
 const MessageBubble = memo(MessageBubbleInner, (prev, next) => {
   if (prev.isStreaming !== next.isStreaming) return false;
   if (next.isStreaming) return false;
+  // Both drive what the action row renders, so a stale bubble would keep
+  // offering Edit during a generation, or keep the editor open after cancel.
+  if (prev.isEditing !== next.isEditing) return false;
+  if (prev.canBranch !== next.canBranch) return false;
   return prev.message.content === next.message.content && prev.message.id === next.message.id;
 });
 

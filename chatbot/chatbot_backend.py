@@ -5,6 +5,7 @@ LangGraph chatbot using Groq with SQLite-backed memory.
 
 import asyncio
 import base64
+import contextlib
 import contextvars
 import hashlib
 import hmac
@@ -17,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from time import time
 from typing import Annotated, Any, AsyncGenerator, Callable, NamedTuple, TypedDict
+from uuid import uuid4
 
 import aiosqlite
 import requests
@@ -26,6 +28,7 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
+    RemoveMessage,
     SystemMessage,
     ToolMessage,
     message_chunk_to_message,
@@ -34,6 +37,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.tools import tool
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph, add_messages
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 import location_config
 import location_service
@@ -111,6 +115,20 @@ class AllProvidersUnavailable(RuntimeError):
 
 class ResponseInterrupted(RuntimeError):
     """A turn failed after some of its text had already reached the client."""
+
+
+class BranchPointNotFound(LookupError):
+    """
+    The message an edit/retry names is not on the thread's active branch.
+
+    Either the id never existed, or it belongs to a branch that a later edit
+    superseded. Both are the same thing to the client: its view of the
+    conversation is stale and it should reload the thread.
+    """
+
+
+class ThreadBusy(RuntimeError):
+    """A generation is already running on this thread."""
 
 
 class DegenerateResponse(RuntimeError):
@@ -1707,6 +1725,28 @@ class _StreamReset:
 
 STREAM_RESET = _StreamReset()
 
+
+class StreamMessageIds:
+    """
+    Yielded once, last, when a turn has been committed to the checkpointer.
+
+    Edit and Retry address a turn by the id of a stored message, so the client
+    needs the real ids for the turn it just watched arrive -- otherwise the
+    only editable messages would be ones that survived a page reload. Carrying
+    them on the stream keeps that to zero extra requests.
+    """
+
+    __slots__ = ("user_message_id", "assistant_message_id")
+
+    def __init__(self, user_message_id: str | None, assistant_message_id: str | None):
+        self.user_message_id = user_message_id
+        self.assistant_message_id = assistant_message_id
+
+
+# What a chat stream yields: answer text, plus the two out-of-band markers the
+# transport has to translate into their own SSE events.
+StreamEvent = str | _StreamReset | StreamMessageIds
+
 # The chain answers from whichever provider is available, and each one has its
 # own house style: Groq's gpt-oss reaches for markdown tables and bold labels,
 # while Gemini tends to reply in flat prose. Same question, visibly different
@@ -2340,24 +2380,73 @@ async def get_response(user_input: str, thread_id: str = "1", user_id: str = "")
         "run_name": "chat_turn",
     }
     compiled_app = await _get_compiled_app()
-    memories = await retrieve_memory_context(user_id, user_input)
+    with _generation_slot(thread_id):
+        async with _turn_context(user_id, thread_id, user_input):
+            response = await compiled_app.ainvoke(
+                {"messages": [HumanMessage(content=user_input, id=str(uuid4()))]},
+                config=config,
+            )
+            # sanitize_degenerate_text stays on this path only: there is no
+            # provider chain to hand the turn to here, so removing a collapse
+            # in place is still better than returning it. finalize_text then
+            # does the cleanup both paths share.
+            return finalize_text(
+                sanitize_degenerate_text(
+                    _message_text(response["messages"][-1].content)
+                )
+            )
+
+
+# Threads with a turn in flight, by id, counted so overlapping normal sends
+# still clean up correctly. Advisory only: it exists so an edit or a retry
+# cannot interleave its fork with a generation that is about to write a
+# checkpoint of its own. Single-process, which is the same assumption the
+# module-level compiled graph and connection already make.
+_active_generations: dict[str, int] = {}
+
+
+@contextlib.contextmanager
+def _generation_slot(thread_id: str, *, exclusive: bool = False):
+    """
+    Mark a thread as generating for the duration of a turn.
+
+    ``exclusive`` refuses to start when another turn is already running. Only
+    the branching paths use it: rejecting a plain send would be a behaviour
+    change on the normal chat endpoint, whereas two forks racing to rewrite
+    the same history is exactly what needs preventing.
+    """
+    if exclusive and _active_generations.get(thread_id):
+        raise ThreadBusy(
+            "This conversation is still generating a reply. Wait for it to "
+            "finish, then try again."
+        )
+    _active_generations[thread_id] = _active_generations.get(thread_id, 0) + 1
+    try:
+        yield
+    finally:
+        remaining = _active_generations.get(thread_id, 1) - 1
+        if remaining > 0:
+            _active_generations[thread_id] = remaining
+        else:
+            _active_generations.pop(thread_id, None)
+
+
+@contextlib.asynccontextmanager
+async def _turn_context(user_id: str, thread_id: str, query: str):
+    """
+    The per-turn ambient state the prompt builder and tools read.
+
+    Retrieving memories here rather than inside the loop keeps one embedding
+    call per turn, and keeps the retrieved block out of the checkpointed
+    history. Shared by the normal and the branching paths so a regenerated
+    turn is built from exactly the same context a fresh one would be.
+    """
+    memories = await retrieve_memory_context(user_id, query)
     user_token = _active_user_id.set(user_id)
     thread_token = _active_thread_id.set(thread_id)
     memory_token = _active_memories.set(memories)
     try:
-        response = await compiled_app.ainvoke(
-            {"messages": [HumanMessage(content=user_input)]},
-            config=config,
-        )
-        # sanitize_degenerate_text stays on this path only: there is no provider
-        # chain to hand the turn to here, so removing a collapse in place is
-        # still better than returning it. finalize_text then does the cleanup
-        # both paths share.
-        return finalize_text(
-            sanitize_degenerate_text(
-                _message_text(response["messages"][-1].content)
-            )
-        )
+        yield
     finally:
         _active_memories.reset(memory_token)
         _active_thread_id.reset(thread_token)
@@ -2366,7 +2455,7 @@ async def get_response(user_input: str, thread_id: str = "1", user_id: str = "")
 
 async def get_response_stream(
     user_input: str, thread_id: str = "1", user_id: str = ""
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[StreamEvent, None]:
     """
     Stream the chatbot response incrementally.
     """
@@ -2377,19 +2466,12 @@ async def get_response_stream(
         "run_name": "chat_turn",
     }
     compiled_app = await _get_compiled_app()
-    memories = await retrieve_memory_context(user_id, user_input)
-    user_token = _active_user_id.set(user_id)
-    thread_token = _active_thread_id.set(thread_id)
-    memory_token = _active_memories.set(memories)
-    try:
-        async for token in _get_response_stream_for_config(
-            compiled_app, config, user_input
-        ):
-            yield token
-    finally:
-        _active_memories.reset(memory_token)
-        _active_thread_id.reset(thread_token)
-        _active_user_id.reset(user_token)
+    with _generation_slot(thread_id):
+        async with _turn_context(user_id, thread_id, user_input):
+            async for token in _get_response_stream_for_config(
+                compiled_app, config, user_input
+            ):
+                yield token
 
 
 def _content_pieces(content: Any) -> list[str]:
@@ -2438,13 +2520,34 @@ async def _get_response_stream_for_config(
     compiled_app: Any,
     config: dict[str, Any],
     user_input: str,
-) -> AsyncGenerator[str, None]:
-    state = await compiled_app.aget_state(config)
-    prior_messages: list[BaseMessage] = []
-    if state and hasattr(state, "values"):
-        prior_messages = list(state.values.get("messages", []))
+    *,
+    reset_history: bool = False,
+) -> AsyncGenerator[StreamEvent, None]:
+    """
+    Run one turn against whatever state ``config`` points at, and stream it.
 
-    delta_messages: list[BaseMessage] = [HumanMessage(content=user_input)]
+    ``config`` carrying a ``checkpoint_id`` is what makes Edit and Retry work:
+    the state is read from that checkpoint and the turn is written back as its
+    child, so the same provider chain, tool loop and SSE path serve a normal
+    message and a re-run of an old one.
+
+    ``reset_history`` covers the one case a checkpoint id cannot express --
+    editing the first message of a thread, where there is no earlier
+    checkpoint to fork from. The turn is then written as a child of the
+    current head that clears the message list first, so the old branch is
+    still reachable by checkpoint id while the active branch starts fresh.
+    """
+    prior_messages: list[BaseMessage] = []
+    if not reset_history:
+        state = await compiled_app.aget_state(config)
+        if state and hasattr(state, "values"):
+            prior_messages = list(state.values.get("messages", []))
+
+    # An explicit id, rather than the one add_messages would assign: this is
+    # the handle the client needs back to be able to edit the turn later.
+    delta_messages: list[BaseMessage] = [
+        HumanMessage(content=user_input, id=str(uuid4()))
+    ]
     # Inject MCP status only for model runtime context.
     working_messages = _messages_for_model([*prior_messages, *delta_messages])
     provider_chain = _get_llm_chain()
@@ -2652,18 +2755,301 @@ async def _get_response_stream_for_config(
         yield notice
 
     if len(delta_messages) > 1:
+        for message in delta_messages:
+            # Providers normally supply one, but a fallback notice built here
+            # does not, and an id-less message is one the client can never
+            # name in an edit or a retry.
+            if message.id is None:
+                message.id = str(uuid4())
+
+        update: list[BaseMessage] = list(delta_messages)
+        if reset_history:
+            # add_messages returns everything after a REMOVE_ALL_MESSAGES
+            # marker, so the clear and the new turn land in one checkpoint
+            # rather than two.
+            update.insert(0, RemoveMessage(id=REMOVE_ALL_MESSAGES))
+
         # Both "chat" and "tools" write `messages`; specify writer node.
+        # When `config` carries a checkpoint_id this forks: the new checkpoint
+        # is written as that checkpoint's child and, because checkpoint ids
+        # are time-ordered, immediately becomes the thread's head.
         await compiled_app.aupdate_state(
             config,
-            {"messages": delta_messages},
+            {"messages": update},
             as_node="chat",
         )
+
+        answer = next(
+            (
+                message
+                for message in reversed(delta_messages)
+                if isinstance(message, AIMessage) and not message.tool_calls
+            ),
+            None,
+        )
+        yield StreamMessageIds(
+            user_message_id=delta_messages[0].id,
+            assistant_message_id=answer.id if answer is not None else None,
+        )
+
+
+# --- Branching (edit / retry) ---------------------------------------------
+#
+# Every turn is written as one checkpoint whose parent is the state the turn
+# started from, so the thread is a linked list of checkpoints and re-running a
+# turn is just "write a different child of the same parent". Because the
+# checkpointer reads the head with ORDER BY checkpoint_id DESC and ids are
+# time-ordered UUIDv6, the newer child *is* the active branch from the moment
+# it is written -- there is no extra pointer to keep in sync, and the old
+# branch stays in the table, reachable by its checkpoint id.
+
+# Checkpoints read while locating a branch point. A thread this long has other
+# problems; the cap is here so a corrupt parent chain cannot spin forever.
+_MAX_BRANCH_SCAN = 2000
+
+
+async def _active_branch(compiled_app: Any, thread_id: str) -> list[Any]:
+    """
+    The thread's active branch, head first.
+
+    ``aget_state_history`` lists *every* checkpoint on the thread, including
+    the ones abandoned by earlier edits, so it cannot be read in order. The
+    head is its first row (same DESC ordering the head lookup uses) and the
+    branch is recovered by following parent links from there -- superseded
+    checkpoints are simply never pointed at.
+    """
+    config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+    snapshots: dict[str, Any] = {}
+    head_id: str | None = None
+    scanned = 0
+
+    async for snapshot in compiled_app.aget_state_history(config):
+        checkpoint_id = (snapshot.config or {}).get("configurable", {}).get(
+            "checkpoint_id"
+        )
+        if not checkpoint_id:
+            continue
+        if head_id is None:
+            head_id = checkpoint_id
+        snapshots[checkpoint_id] = snapshot
+        scanned += 1
+        if scanned >= _MAX_BRANCH_SCAN:
+            logger.warning(
+                "Stopped scanning thread %s after %s checkpoints; an edit "
+                "targeting an older message may not find its branch point.",
+                thread_id,
+                _MAX_BRANCH_SCAN,
+            )
+            break
+
+    branch: list[Any] = []
+    seen: set[str] = set()
+    cursor = head_id
+    while cursor and cursor in snapshots and cursor not in seen:
+        seen.add(cursor)
+        snapshot = snapshots[cursor]
+        branch.append(snapshot)
+        cursor = (snapshot.parent_config or {}).get("configurable", {}).get(
+            "checkpoint_id"
+        )
+    return branch
+
+
+def _branch_messages(snapshot: Any) -> list[BaseMessage]:
+    values = getattr(snapshot, "values", None) or {}
+    return list(values.get("messages", []))
+
+
+async def resolve_branch_point(
+    compiled_app: Any,
+    thread_id: str,
+    message_id: str,
+) -> tuple[str | None, str]:
+    """
+    Where to re-run the turn that ``message_id`` belongs to.
+
+    Returns ``(checkpoint_id, user_text)``: the checkpoint to fork from, and
+    the text of the user message that drove the turn. A ``None`` checkpoint
+    means there is no stored state matching the history before that turn --
+    the turn is the thread's first -- and the caller clears the history
+    instead.
+
+    An assistant message resolves to the user message above it, because both
+    features rewrite the same thing: the assistant's answer to one request.
+    Retry is then edit-with-unchanged-text, which is why they share a path.
+
+    The checkpoint is chosen by matching the message list, not by following
+    the parent link of the turn that introduced the message. The two are the
+    same for an ordinary turn, but a branch that started from a cleared
+    history is written as a child of the head it replaced, so its parent
+    still holds the messages that branch exists to discard.
+    """
+    branch = await _active_branch(compiled_app, thread_id)
+    if not branch:
+        raise BranchPointNotFound("This conversation has no history yet.")
+
+    head_messages = _branch_messages(branch[0])
+    position = next(
+        (i for i, message in enumerate(head_messages) if message.id == message_id),
+        None,
+    )
+    if position is None:
+        raise BranchPointNotFound(
+            "That message is no longer part of this conversation."
+        )
+
+    # Walk back to the request being answered. For a user message that is the
+    # message itself; for an assistant or tool message it is the turn's prompt.
+    target_index = next(
+        (
+            i
+            for i in range(position, -1, -1)
+            if isinstance(head_messages[i], HumanMessage)
+        ),
+        None,
+    )
+    if target_index is None:
+        raise BranchPointNotFound(
+            "That message has no user request to regenerate from."
+        )
+    target = head_messages[target_index]
+
+    # The state this turn started from: everything above the request, and
+    # nothing else.
+    prefix_ids = [message.id for message in head_messages[:target_index]]
+    for snapshot in branch:  # head -> root
+        if [message.id for message in _branch_messages(snapshot)] == prefix_ids:
+            checkpoint_id = (snapshot.config or {}).get("configurable", {}).get(
+                "checkpoint_id"
+            )
+            return checkpoint_id, _message_text(target.content)
+
+    if not prefix_ids:
+        # Nothing preceded the request and no empty checkpoint was ever
+        # written, which is the normal shape for a thread's first turn.
+        return None, _message_text(target.content)
+
+    raise BranchPointNotFound(
+        "This conversation's history cannot be rewound to that message."
+    )
+
+
+class RegenerationPlan(NamedTuple):
+    """A validated, ready-to-run re-execution of one turn."""
+
+    thread_id: str
+    user_id: str
+    message_id: str
+    user_input: str
+    # None means the turn is the thread's first: there is no earlier
+    # checkpoint, so the branch starts from a cleared history instead.
+    checkpoint_id: str | None
+    mode: str
+
+
+async def prepare_regeneration(
+    thread_id: str,
+    user_id: str,
+    message_id: str,
+    new_text: str | None = None,
+) -> RegenerationPlan:
+    """
+    Validate an Edit or Retry and work out where to fork.
+
+    Separate from running it so the caller can answer "not your thread",
+    "that message is gone" and "already generating" with a real status code
+    instead of an error buried in a stream that has already returned 200.
+
+    ``new_text`` replaces the user message (Edit); omitting it re-sends the
+    original (Retry).
+    """
+    await assert_thread_owner(user_id, thread_id)
+
+    edited = new_text.strip() if new_text is not None else None
+    if new_text is not None and not edited:
+        raise ValueError("The edited message cannot be empty.")
+
+    if _active_generations.get(thread_id):
+        raise ThreadBusy(
+            "This conversation is still generating a reply. Wait for it to "
+            "finish, then try again."
+        )
+
+    compiled_app = await _get_compiled_app()
+    checkpoint_id, original_text = await resolve_branch_point(
+        compiled_app, thread_id, message_id
+    )
+    user_input = edited if edited is not None else original_text
+    if not user_input.strip():
+        raise BranchPointNotFound("That message has no text to regenerate from.")
+
+    return RegenerationPlan(
+        thread_id=thread_id,
+        user_id=user_id,
+        message_id=message_id,
+        user_input=user_input,
+        checkpoint_id=checkpoint_id,
+        mode="edit" if edited is not None else "retry",
+    )
+
+
+async def regenerate_stream(
+    plan: RegenerationPlan,
+) -> AsyncGenerator[StreamEvent, None]:
+    """
+    Run a prepared Edit or Retry on a new branch and stream the result.
+
+    Everything after the branch point is left behind: the model sees the state
+    as it was before the turn plus the new request, so tools run again with
+    the new arguments and the answers that followed the old request are not in
+    context.
+
+    Nothing is written until the turn completes, so a failed generation leaves
+    the existing branch as the active one.
+    """
+    compiled_app = await _get_compiled_app()
+
+    configurable: dict[str, Any] = {
+        "thread_id": plan.thread_id,
+        "checkpoint_ns": "",
+    }
+    if plan.checkpoint_id is not None:
+        configurable["checkpoint_id"] = plan.checkpoint_id
+    config = {
+        "configurable": configurable,
+        "metadata": {"thread_id": plan.thread_id, "user_id": plan.user_id},
+        "run_name": "chat_branch",
+    }
+
+    logger.info(
+        "Regenerating thread %s from message %s (%s) at checkpoint %s.",
+        plan.thread_id,
+        plan.message_id,
+        plan.mode,
+        plan.checkpoint_id or "<start of thread>",
+    )
+
+    # Re-checked here because prepare and run are two awaits apart; the slot
+    # is what actually serialises two forks racing on one thread.
+    with _generation_slot(plan.thread_id, exclusive=True):
+        async with _turn_context(plan.user_id, plan.thread_id, plan.user_input):
+            async for token in _get_response_stream_for_config(
+                compiled_app,
+                config,
+                plan.user_input,
+                reset_history=plan.checkpoint_id is None,
+            ):
+                yield token
 
 
 async def get_chat_history(thread_id: str, user_id: str) -> list[dict[str, str]]:
     """
     Retrieve the chat history for a given thread ID from the checkpointer.
-    Returns a list of dictionaries with 'role' and 'content'.
+    Returns a list of dictionaries with 'id', 'role' and 'content'.
+
+    The id is the checkpointed message's own id, which is what Edit and Retry
+    address a turn by -- an index into this list would not survive the list
+    changing under a branch switch.
     """
     await assert_thread_owner(user_id, thread_id)
     config = {"configurable": {"thread_id": thread_id}}
@@ -2679,7 +3065,13 @@ async def get_chat_history(thread_id: str, user_id: str) -> list[dict[str, str]]
 
         for msg in messages:
             if isinstance(msg, HumanMessage):
-                history.append({"role": "user", "content": _message_text(msg.content)})
+                history.append(
+                    {
+                        "id": str(msg.id or ""),
+                        "role": "user",
+                        "content": _message_text(msg.content),
+                    }
+                )
             elif isinstance(msg, AIMessage):
                 # A message carrying tool_calls is the model deciding to use a
                 # tool, not an answer. Its text (when it has any) is preamble
@@ -2687,7 +3079,11 @@ async def get_chat_history(thread_id: str, user_id: str) -> list[dict[str, str]]
                 # neither the reloaded transcript nor the memory extractor.
                 if msg.content and not msg.tool_calls:
                     history.append(
-                        {"role": "assistant", "content": _message_text(msg.content)}
+                        {
+                            "id": str(msg.id or ""),
+                            "role": "assistant",
+                            "content": _message_text(msg.content),
+                        }
                     )
             elif isinstance(msg, SystemMessage):
                 continue

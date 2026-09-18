@@ -44,6 +44,43 @@ function generateId() {
   return Math.random().toString(36).substring(2, 10);
 }
 
+/**
+ * One turn of the conversation, in one of three flavours.
+ *
+ * `target` on a branch is always the *user* message being re-answered: it is
+ * both what the server forks around and where the on-screen list is cut.
+ */
+type TurnRequest =
+  | { kind: "send"; text: string }
+  | { kind: "edit"; target: Message; text: string }
+  | { kind: "retry"; target: Message };
+
+/** A request the server refused before streaming; its reason is user-facing. */
+class StreamStartError extends Error {}
+
+function endpointFor(req: TurnRequest, threadId: string): string {
+  return req.kind === "send"
+    ? `${API_URL}/api/chat/stream`
+    : `${API_URL}/api/chat/${encodeURIComponent(threadId)}/fork`;
+}
+
+function bodyFor(req: TurnRequest, threadId: string, text: string): unknown {
+  if (req.kind === "send") return { message: text, thread_id: threadId };
+  if (req.kind === "edit")
+    return { message_id: req.target.serverId, mode: "edit", message: text };
+  return { message_id: req.target.serverId, mode: "retry" };
+}
+
+async function readErrorDetail(res: Response): Promise<string | null> {
+  try {
+    const data = await res.json();
+    if (typeof data?.detail === "string") return data.detail;
+  } catch {
+    // A non-JSON body (a proxy's error page) tells the user nothing useful.
+  }
+  return null;
+}
+
 // Safely extract string content from API responses
 function extractContent(content: unknown): string {
   if (typeof content === "string") return content;
@@ -90,6 +127,8 @@ export default function Home() {
   const [pendingDeleteAll, setPendingDeleteAll] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
+  /** Client id of the user message open in the inline editor, if any. */
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [rag, setRag] = useState<RagState>(IDLE_RAG);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -110,6 +149,11 @@ export default function Home() {
   /** Set when the SSE stream reports an error mid-flight. */
   const streamErrorRef = useRef<string | null>(null);
   const interruptedRef = useRef(false);
+  // The message list as of this render. Edit and Retry need to read it and to
+  // snapshot it for rollback; depending on `messages` instead would rebuild
+  // the turn runner (and every memoised bubble's callbacks) on every token.
+  const messagesRef = useRef<Message[]>(messages);
+  messagesRef.current = messages;
 
   const resetChatState = useCallback(() => {
     if (abortControllerRef.current) {
@@ -128,6 +172,7 @@ export default function Home() {
     setHistoryError(false);
     setHistoryLoading(false);
     setFailedMessage(null);
+    setEditingId(null);
     setPendingDelete(null);
     setRag(IDLE_RAG);
     setThreadId(generateId());
@@ -413,39 +458,76 @@ export default function Home() {
     toast("info", "Generation stopped");
   }, [stopGenerating, toast]);
 
-  /* ── Send message with smooth SSE streaming ───────────────────── */
+  /* ── Running a turn: send, edit, retry ────────────────────────── */
 
-  const sendMessage = useCallback(
-    async (text: string) => {
-      if (!text.trim() || isLoading) return;
+  /**
+   * Send a new message, or re-run an existing turn on a new branch.
+   *
+   * All three go through one request/stream path because the server treats
+   * them the same way: an edit and a retry are a normal turn executed against
+   * the state that preceded an earlier one. Only the endpoint, the body and
+   * what happens to the messages already on screen differ.
+   */
+  const runTurn = useCallback(
+    async (req: TurnRequest) => {
+      if (isLoading) return;
       if (rag.status === "uploading") {
         toast("info", "Wait for the PDF to finish indexing, then send your question.");
         return;
       }
 
-      // Cancel any existing stream
+      const isBranch = req.kind !== "send";
+      // The list as it stands, so a failed branch can be put back exactly.
+      const snapshot = messagesRef.current;
+
+      let promptText: string;
+      let priorMessages: Message[];
+
+      if (req.kind === "send") {
+        promptText = req.text.trim();
+        if (!promptText) return;
+        priorMessages = snapshot;
+      } else {
+        if (!req.target.serverId) {
+          toast("error", "That message can't be edited yet. Try again in a moment.");
+          return;
+        }
+        const targetIndex = snapshot.findIndex((m) => m.id === req.target.id);
+        if (targetIndex < 0) {
+          toast("error", "That message is no longer in this conversation.");
+          return;
+        }
+        promptText = (req.kind === "edit" ? req.text : req.target.content).trim();
+        if (!promptText) return;
+        // Everything from the edited turn onwards belongs to the branch being
+        // replaced, so it leaves the screen the moment the new one starts.
+        priorMessages = snapshot.slice(0, targetIndex);
+      }
+
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
-
       const controller = new AbortController();
       abortControllerRef.current = controller;
 
       const userMsg: Message = {
         id: generateId(),
         role: "user",
-        content: text.trim(),
+        content: promptText,
         timestamp: new Date(),
       };
-
       const assistantId = generateId();
 
+      setEditingId(null);
       setFailedMessage(null);
-      setMessages((prev) => [...prev, userMsg]);
-      setInput("");
+      setMessages([...priorMessages, userMsg]);
+      if (req.kind === "send") setInput("");
       setIsLoading(true);
       setIsStreaming(false);
       accumulatedRef.current = "";
+      // Set only once the turn is committed, so its absence at the end is a
+      // reliable "nothing was written".
+      let committedIds: { user?: string | null; assistant?: string | null } | null = null;
 
       try {
         // Own-location questions ("what's the weather?", "anything near me?")
@@ -456,15 +538,15 @@ export default function Home() {
         // A null result is deliberately NOT fatal: we still send the message and
         // let the backend/LLM handle the missing location gracefully — it asks
         // the user for a city. Aborting here would just swallow their message.
-        if (needsLocation(text)) {
+        if (needsLocation(promptText)) {
           await ensureLocation();
         }
 
-        const res = await fetch(`${API_URL}/api/chat/stream`, {
+        const res = await fetch(endpointFor(req, threadId), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ message: text.trim(), thread_id: threadId }),
+          body: JSON.stringify(bodyFor(req, threadId, promptText)),
           signal: controller.signal,
         });
 
@@ -474,7 +556,15 @@ export default function Home() {
           toast("error", "Please sign in again.");
           return;
         }
-        if (!res.ok) throw new Error(`Streaming request failed with status ${res.status}`);
+        if (!res.ok) {
+          // A branch is rejected before any of it runs — a stale message id, a
+          // turn already in flight, someone else's thread — so the server's
+          // reason is worth showing verbatim.
+          const detail = isBranch ? await readErrorDetail(res) : null;
+          throw new StreamStartError(
+            detail || `Streaming request failed with status ${res.status}`
+          );
+        }
         if (!res.body) throw new Error("No response body");
 
         streamErrorRef.current = null;
@@ -533,6 +623,13 @@ export default function Home() {
 
               if (parsed.done) {
                 // Stream complete
+                continue;
+              }
+
+              if (parsed.message_ids) {
+                // The turn is now in the checkpointer. These are the handles
+                // Edit and Retry will need for it.
+                committedIds = parsed.message_ids;
                 continue;
               }
 
@@ -596,6 +693,15 @@ export default function Home() {
           rafRef.current = null;
         }
 
+        if (isBranch && !committedIds) {
+          // The server abandons a branch it could not finish, leaving the old
+          // one active. Showing the half-built branch would be showing a
+          // conversation that no longer exists anywhere.
+          setMessages(snapshot);
+          toast("error", "Couldn't regenerate that response. Nothing was changed.");
+          return;
+        }
+
         // Final flush. A reply cut off at the token ceiling, or one ended by an
         // interruption, can stop mid-`**bold**`; the backend closes the copy it
         // stores, and this closes the copy on screen so the two agree.
@@ -609,17 +715,41 @@ export default function Home() {
               content: finalContent,
             };
           }
-          return updated;
+          if (!committedIds) return updated;
+          // Both ids change on a branch: the re-run writes a new user message
+          // as well as a new answer.
+          return updated.map((m) => {
+            if (m.id === userMsg.id) return { ...m, serverId: committedIds?.user ?? null };
+            if (m.id === assistantId) return { ...m, serverId: committedIds?.assistant ?? null };
+            return m;
+          });
         });
 
-        if (interruptedRef.current) {
+        if (interruptedRef.current && !isBranch) {
           // Half an answer is on screen and it is not going to finish, so give
           // the user the one-click retry rather than leaving them to retype.
-          setFailedMessage(text.trim());
+          setFailedMessage(promptText);
         }
       } catch (err) {
         if ((err as Error).name === "AbortError") {
-          // Stream was cancelled by user — keep what we have
+          // Stream was cancelled by user — keep what we have.
+          if (isBranch && !committedIds) {
+            // Except on a branch, where "what we have" is a conversation the
+            // server never committed to. Stopping means the old one stands.
+            setMessages(snapshot);
+          }
+          return;
+        }
+        if (isBranch) {
+          // Same reasoning as the no-commit case above: the stored
+          // conversation never moved, so neither does the one on screen.
+          setMessages(snapshot);
+          toast(
+            "error",
+            err instanceof StreamStartError
+              ? err.message
+              : "Couldn't regenerate that response. Nothing was changed."
+          );
           return;
         }
         // Drop the empty placeholder and surface a retryable error card instead
@@ -627,25 +757,34 @@ export default function Home() {
         setMessages((prev) =>
           prev.filter((m) => !(m.id === assistantId && !m.content))
         );
-        setFailedMessage(text.trim());
+        setFailedMessage(promptText);
         toast("error", "Message failed to send. Check your connection.");
       } finally {
         abortControllerRef.current = null;
         setIsLoading(false);
         setIsStreaming(false);
         if (streamErrorRef.current) {
-          toast(
-            "error",
-            interruptedRef.current
-              ? "The reply was cut short. Tap retry to ask again."
-              : "The assistant hit an error while replying."
-          );
+          if (!isBranch) {
+            toast(
+              "error",
+              interruptedRef.current
+                ? "The reply was cut short. Tap retry to ask again."
+                : "The assistant hit an error while replying."
+            );
+          }
           streamErrorRef.current = null;
           interruptedRef.current = false;
         }
       }
     },
     [ensureLocation, isLoading, isStreaming, rag.status, resetChatState, threadId, toast]
+  );
+
+  const sendMessage = useCallback(
+    (text: string) => {
+      void runTurn({ kind: "send", text });
+    },
+    [runTurn]
   );
 
   const retryFailed = useCallback(() => {
@@ -659,6 +798,50 @@ export default function Home() {
     });
     sendMessage(text);
   }, [failedMessage, sendMessage]);
+
+  /* ── Edit / regenerate ────────────────────────────────────────── */
+
+  const startEdit = useCallback(
+    (message: Message) => {
+      if (isLoading) return;
+      setEditingId(message.id);
+    },
+    [isLoading]
+  );
+
+  const cancelEdit = useCallback(() => setEditingId(null), []);
+
+  const submitEdit = useCallback(
+    (message: Message, text: string) => {
+      if (text.trim() === message.content.trim()) {
+        // Nothing changed, so there is no new branch to create.
+        setEditingId(null);
+        return;
+      }
+      void runTurn({ kind: "edit", target: message, text });
+    },
+    [runTurn]
+  );
+
+  const regenerate = useCallback(
+    (message: Message) => {
+      // Retry is addressed by the request being re-answered, which is also the
+      // point the on-screen list is truncated to.
+      const list = messagesRef.current;
+      const index = list.findIndex((m) => m.id === message.id);
+      if (index < 0) return;
+      const target =
+        message.role === "user"
+          ? message
+          : [...list.slice(0, index)].reverse().find((m) => m.role === "user");
+      if (!target) {
+        toast("error", "There's no message to regenerate from.");
+        return;
+      }
+      void runTurn({ kind: "retry", target });
+    },
+    [runTurn, toast]
+  );
 
   /* ── Thread management ────────────────────────────────────────── */
 
@@ -674,6 +857,7 @@ export default function Home() {
     if (messages.length > 0) rememberCurrentThread();
     setMessages([]);
     setFailedMessage(null);
+    setEditingId(null);
     setRag(IDLE_RAG);
     setThreadId(generateId());
     if (!isDesktop) closeSidebar();
@@ -690,6 +874,7 @@ export default function Home() {
       if (messages.length > 0) rememberCurrentThread();
 
       setFailedMessage(null);
+      setEditingId(null);
       setIsLoadingHistory(true);
       setMessages([]);
       setRag(IDLE_RAG);
@@ -711,8 +896,11 @@ export default function Home() {
 
         if (data.history) {
           const loadedMessages: Message[] = data.history.map(
-            (msg: { role: "user" | "assistant"; content: string }) => ({
+            (msg: { id?: string; role: "user" | "assistant"; content: string }) => ({
               id: generateId(),
+              // What Edit and Retry address the turn by. A reloaded
+              // conversation is the case where it always exists.
+              serverId: msg.id ?? null,
               role: msg.role,
               content: extractContent(msg.content),
               timestamp: new Date(),
@@ -953,6 +1141,11 @@ export default function Home() {
           isLoadingHistory={isLoadingHistory}
           failedMessage={failedMessage}
           onRetry={retryFailed}
+          editingId={editingId}
+          onStartEdit={startEdit}
+          onCancelEdit={cancelEdit}
+          onSubmitEdit={submitEdit}
+          onRegenerate={regenerate}
         />
 
         {!locationDismissed && (

@@ -1,6 +1,7 @@
 """
 FastAPI server wrapping the chatbot backend.
-Exposes POST /api/chat, POST /api/chat/stream, and GET /api/health.
+Exposes POST /api/chat, POST /api/chat/stream, POST /api/chat/{thread_id}/fork,
+and GET /api/health.
 """
 
 import json
@@ -23,7 +24,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.background import BackgroundTask
 
 import location_service
@@ -33,10 +34,14 @@ import memory_config
 from chatbot_backend import (
     AllProvidersUnavailable,
     AuthError,
+    BranchPointNotFound,
     ForbiddenError,
     ResponseInterrupted,
     JWT_COOKIE_NAME,
     JWT_EXP_SECONDS,
+    StreamEvent,
+    StreamMessageIds,
+    ThreadBusy,
     UserExistsError,
     UserRecord,
     authenticate_user,
@@ -59,8 +64,10 @@ from chatbot_backend import (
     ingest_pdf,
     initialize_backend,
     list_user_memories,
+    prepare_regeneration,
     process_memory_turn,
     record_location_failure,
+    regenerate_stream,
     resolve_user_city,
     resolve_user_coordinates,
     STREAM_RESET,
@@ -111,6 +118,52 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     thread_id: str = "1"
+
+
+class BranchRequest(BaseModel):
+    """
+    Re-run one turn of a conversation on a new branch.
+
+    `message_id` names a message in the thread's current history (as returned
+    by GET /api/chat/{thread_id} or by a stream's `message_ids` event), not a
+    checkpoint: the client only ever sees messages, and one stored turn is one
+    checkpoint on the streaming path but three on the non-streaming one, so
+    mapping a message to the state before it is the server's job.
+
+    mode="edit"  replaces that user message with `message` and re-runs;
+    mode="retry" re-runs the same request to get a different answer.
+    """
+
+    message_id: str = Field(min_length=1, max_length=200)
+    mode: str = Field(default="edit")
+    message: str | None = Field(default=None, max_length=32000)
+
+    @field_validator("mode")
+    @classmethod
+    def _known_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"edit", "retry"}:
+            raise ValueError("mode must be 'edit' or 'retry'")
+        return normalized
+
+    @field_validator("message")
+    @classmethod
+    def _non_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("message cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def _message_matches_mode(self) -> "BranchRequest":
+        if self.mode == "edit" and self.message is None:
+            raise ValueError("mode 'edit' requires the replacement message text")
+        if self.mode == "retry" and self.message is not None:
+            # Silently ignoring it would let a client think it had edited the
+            # message when the original was re-sent.
+            raise ValueError("mode 'retry' does not take a message")
+        return self
 
 
 class ChatResponse(BaseModel):
@@ -408,55 +461,128 @@ async def chat(
     return ChatResponse(response=reply)
 
 
+SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "Content-Encoding": "identity",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
+async def _sse_events(
+    stream: AsyncGenerator[StreamEvent, None],
+    *,
+    label: str,
+) -> AsyncGenerator[str, None]:
+    """
+    Turn one chat stream into SSE frames.
+
+    Shared by the normal and the branching endpoints so an edited or retried
+    turn arrives in exactly the same event shapes as a fresh one -- the client
+    reads all three with one parser.
+    """
+    log = logging.getLogger("chatbot.api")
+    try:
+        async for event in stream:
+            # The backend retracts text it streamed before discovering the
+            # round was a tool call. Forward that as its own event so the
+            # client drops it instead of showing abandoned text above the
+            # real answer.
+            if event is STREAM_RESET:
+                yield f"data: {json.dumps({'reset': True})}\n\n"
+                continue
+            # Emitted once the turn is committed: the ids the client needs to
+            # be able to edit or retry this turn later.
+            if isinstance(event, StreamMessageIds):
+                payload = {
+                    "message_ids": {
+                        "user": event.user_message_id,
+                        "assistant": event.assistant_message_id,
+                    }
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                continue
+            yield f"data: {json.dumps({'token': event})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+    except ResponseInterrupted as e:
+        # The turn died with part of the answer already on screen. That text
+        # is real model output, so it stays; the client just needs to know
+        # the answer is incomplete and offer a retry.
+        log.warning("%s interrupted: %s", label, e)
+        yield f"data: {json.dumps({'error': str(e), 'interrupted': True})}\n\n"
+    except AllProvidersUnavailable as e:
+        # Same reasoning as the non-streaming path: the provider's raw
+        # quota/billing text stays in the log, the user gets plain English.
+        log.warning("All chat providers failed during %s: %s", label, e)
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    except Exception as e:
+        log.exception("%s failed.", label)
+        yield f"data: {json.dumps({'error': f'Error: {str(e)}'})}\n\n"
+
+
 @app.post("/api/chat/stream")
 async def chat_stream(
     req: ChatRequest,
     user: UserRecord = Depends(current_user),
 ) -> StreamingResponse:
     """Stream the chatbot response token-by-token via SSE."""
-
-    async def generate():
-        try:
-            async for token in get_response_stream(
-                req.message,
-                thread_id=req.thread_id,
-                user_id=user["id"],
-            ):
-                # The backend retracts text it streamed before discovering the
-                # round was a tool call. Forward that as its own event so the
-                # client drops it instead of showing abandoned text above the
-                # real answer.
-                if token is STREAM_RESET:
-                    yield f"data: {json.dumps({'reset': True})}\n\n"
-                    continue
-                yield f"data: {json.dumps({'token': token})}\n\n"
-            yield f"data: {json.dumps({'done': True})}\n\n"
-        except ResponseInterrupted as e:
-            # The turn died with part of the answer already on screen. That text
-            # is real model output, so it stays; the client just needs to know
-            # the answer is incomplete and offer a retry.
-            logging.getLogger("chatbot.api").warning("Chat stream interrupted: %s", e)
-            yield f"data: {json.dumps({'error': str(e), 'interrupted': True})}\n\n"
-        except AllProvidersUnavailable as e:
-            # Same reasoning as the non-streaming path: the provider's raw
-            # quota/billing text stays in the log, the user gets plain English.
-            logging.getLogger("chatbot.api").warning("All chat providers failed: %s", e)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        except Exception as e:
-            logging.getLogger("chatbot.api").exception("Chat stream failed.")
-            yield f"data: {json.dumps({'error': f'Error: {str(e)}'})}\n\n"
-
+    stream = get_response_stream(
+        req.message,
+        thread_id=req.thread_id,
+        user_id=user["id"],
+    )
     return StreamingResponse(
-        generate(),
+        _sse_events(stream, label="Chat stream"),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Content-Encoding": "identity",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
+        headers=SSE_HEADERS,
         # Starlette runs this once the stream is fully sent to the client.
         background=BackgroundTask(process_memory_turn, user["id"], req.thread_id),
+    )
+
+
+@app.post("/api/chat/{thread_id}/fork")
+async def chat_fork(
+    thread_id: str,
+    req: BranchRequest,
+    user: UserRecord = Depends(current_user),
+) -> StreamingResponse:
+    """
+    Re-run one turn on a new branch and stream the new answer.
+
+    Edit and Retry both land here. The named turn is re-executed from the
+    state that preceded it, so tools run again with the new arguments and
+    everything that followed the old request is left on the abandoned branch.
+    The new branch becomes the thread's active history; the old one stays in
+    the checkpoint table.
+
+    The ownership check is the same one the rest of the chat routes use, and
+    it is sufficient: checkpoints are keyed by thread_id, so a thread the
+    caller owns can only contain that caller's checkpoints.
+    """
+    try:
+        # Resolved before the response starts, so "not your thread", "that
+        # message is gone" and "already generating" come back as real status
+        # codes rather than an SSE error frame delivered under a 200.
+        plan = await prepare_regeneration(
+            thread_id=thread_id,
+            user_id=user["id"],
+            message_id=req.message_id,
+            new_text=req.message if req.mode == "edit" else None,
+        )
+    except ForbiddenError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except BranchPointNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ThreadBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return StreamingResponse(
+        _sse_events(regenerate_stream(plan), label=f"Chat {req.mode}"),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+        background=BackgroundTask(process_memory_turn, user["id"], thread_id),
     )
 
 
