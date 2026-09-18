@@ -1,11 +1,12 @@
 "use client";
 
 import { cn } from "@/app/lib/utils";
-import { AlertCircle, ArrowDown, RotateCcw, Sparkles } from "lucide-react";
+import { AlertCircle, ArrowDown, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import MessageBubble, { type Message } from "./MessageBubble";
 import TypingIndicator from "./TypingIndicator";
 import Button from "./ui/Button";
+import Logo from "./ui/Logo";
 import { Skeleton } from "./ui/Primitives";
 
 interface ChatAreaProps {
@@ -117,12 +118,9 @@ export default function ChatArea({
           /* ══ Welcome hero ══ */
           <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6">
             <div className="flex w-full max-w-xl flex-col items-center text-center">
-              <span
-                className="animate-rise mb-5 flex h-12 w-12 items-center justify-center rounded-xl bg-accent shadow-e2"
-                aria-hidden
-              >
-                <Sparkles className="h-5.5 w-5.5 text-white" strokeWidth={1.75} />
-              </span>
+              {/* rounded-xl matches the mark's own 25% radius, so the shadow
+                  follows its corners instead of boxing them in. */}
+              <Logo size={48} className="animate-rise mb-5 rounded-xl shadow-e2" />
               <h1
                 className="animate-rise text-[1.75rem] leading-tight font-bold tracking-tight text-fg sm:text-display"
                 style={{ animationDelay: "40ms" }}

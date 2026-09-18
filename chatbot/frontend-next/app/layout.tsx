@@ -13,6 +13,12 @@ export const metadata: Metadata = {
   title: "Zeno AI",
   description:
     "Zeno AI — an assistant with real-time streaming answers and PDF-grounded search.",
+  // Declared explicitly so the brand mark wins over app/favicon.ico, which
+  // Next would otherwise serve as the tab icon.
+  icons: {
+    icon: [{ url: "/brand/zeno-mark-spark.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/brand/zeno-mark-spark.svg" }],
+  },
 };
 
 export const viewport: Viewport = {

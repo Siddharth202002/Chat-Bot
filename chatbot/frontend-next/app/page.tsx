@@ -10,6 +10,7 @@ import Sidebar, { type ChatSummary, type RagState } from "./components/Sidebar";
 import SuggestionGrid from "./components/SuggestionGrid";
 import Button from "./components/ui/Button";
 import ConfirmDialog from "./components/ui/ConfirmDialog";
+import Logo from "./components/ui/Logo";
 import { useToast } from "./components/ui/Toast";
 import { useUserLocation } from "./hooks/useUserLocation";
 import { needsLocation } from "./lib/location";
@@ -1043,6 +1044,7 @@ export default function Home() {
           }}
         >
           <div className="mb-5">
+            <Logo size={40} className="mb-3 rounded-[10px] shadow-e2" />
             <h1 className="text-title-sm font-semibold text-fg">Zeno AI</h1>
             <p className="mt-1 text-small text-fg-muted">
               {authMode === "login" ? "Sign in to your chats." : "Create your account."}

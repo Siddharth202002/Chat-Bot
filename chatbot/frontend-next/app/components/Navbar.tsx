@@ -3,6 +3,7 @@
 import { LogOut, PanelLeft } from "lucide-react";
 import { Badge } from "./ui/Primitives";
 import { IconButton } from "./ui/Button";
+import Logo from "./ui/Logo";
 
 interface NavbarProps {
   /** True for the whole in-flight window, not just once tokens arrive. */
@@ -31,6 +32,7 @@ export default function Navbar({
           <PanelLeft className="h-4.5 w-4.5" strokeWidth={1.75} />
         </IconButton>
 
+        <Logo size={24} />
         <span className="truncate text-small font-semibold text-fg">Zeno AI</span>
       </div>
 

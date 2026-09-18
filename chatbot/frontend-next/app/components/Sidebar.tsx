@@ -10,12 +10,12 @@ import {
   PanelLeftClose,
   Plus,
   Search,
-  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import Button, { IconButton } from "./ui/Button";
+import Logo from "./ui/Logo";
 import { Badge, EmptyState, Skeleton } from "./ui/Primitives";
 
 export interface ChatSummary {
@@ -234,12 +234,7 @@ export default function Sidebar({
     <>
       {/* Brand + collapse */}
       <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-line-subtle px-3">
-        <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent"
-          aria-hidden
-        >
-          <Sparkles className="h-3.5 w-3.5 text-white" strokeWidth={2} />
-        </span>
+        <Logo size={28} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-small font-semibold text-fg">Zeno AI</p>
           <p className="truncate text-micro text-fg-subtle">Powered by LangGraph</p>
