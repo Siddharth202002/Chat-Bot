@@ -40,12 +40,14 @@ from chatbot_backend import (
     JWT_COOKIE_NAME,
     JWT_EXP_SECONDS,
     StreamEvent,
-    StreamMessageIds,
+    StreamTurnCommitted,
     ThreadBusy,
     UserExistsError,
     UserRecord,
     authenticate_user,
     assert_thread_not_foreign,
+    available_model_ids,
+    available_models,
     clear_user_location,
     close_backend,
     create_access_token,
@@ -118,6 +120,9 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     thread_id: str = "1"
+    # A provider id from GET /api/models. Omitted means the chain's own
+    # order, which is what every existing client already sends.
+    model: str | None = Field(default=None, max_length=64)
 
 
 class BranchRequest(BaseModel):
@@ -137,6 +142,7 @@ class BranchRequest(BaseModel):
     message_id: str = Field(min_length=1, max_length=200)
     mode: str = Field(default="edit")
     message: str | None = Field(default=None, max_length=32000)
+    model: str | None = Field(default=None, max_length=64)
 
     @field_validator("mode")
     @classmethod
@@ -254,6 +260,47 @@ async def current_user(
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     return {"status": "ok", "mcp": get_mcp_status()}
+
+
+def _validated_model(model: str | None) -> str | None:
+    """
+    A provider id the chain can actually serve, or None for its own order.
+
+    Rejected rather than quietly ignored: a client sending a stale or
+    misspelled id would otherwise be answered by the default model while
+    believing it had picked one.
+    """
+    if model is None:
+        return None
+    chosen = model.strip()
+    if not chosen:
+        return None
+    allowed = available_model_ids()
+    if chosen not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown model {chosen!r}. Available: "
+                + (", ".join(allowed) if allowed else "none configured")
+            ),
+        )
+    return chosen
+
+
+@app.get("/api/models")
+async def list_models(_: UserRecord = Depends(current_user)) -> dict[str, Any]:
+    """
+    The models this deployment can actually use, in fallback order.
+
+    Read from the live provider chain rather than a fixed list, because a
+    provider with no API key is skipped at startup -- so what is offerable
+    depends on the deployment, and the UI must not guess.
+    """
+    models = available_models()
+    return {
+        "models": models,
+        "default": models[0]["id"] if models else None,
+    }
 
 
 @app.post("/api/auth/register")
@@ -443,7 +490,12 @@ async def chat(
     user: UserRecord = Depends(current_user),
 ) -> ChatResponse:
     try:
-        reply = await get_response(req.message, thread_id=req.thread_id, user_id=user["id"])
+        reply = await get_response(
+            req.message,
+            thread_id=req.thread_id,
+            user_id=user["id"],
+            model=_validated_model(req.model),
+        )
     except ForbiddenError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     except AllProvidersUnavailable as e:
@@ -493,12 +545,13 @@ async def _sse_events(
                 continue
             # Emitted once the turn is committed: the ids the client needs to
             # be able to edit or retry this turn later.
-            if isinstance(event, StreamMessageIds):
+            if isinstance(event, StreamTurnCommitted):
                 payload = {
                     "message_ids": {
                         "user": event.user_message_id,
                         "assistant": event.assistant_message_id,
-                    }
+                    },
+                    "answered_by": event.answered_by,
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
                 continue
@@ -530,6 +583,7 @@ async def chat_stream(
         req.message,
         thread_id=req.thread_id,
         user_id=user["id"],
+        model=_validated_model(req.model),
     )
     return StreamingResponse(
         _sse_events(stream, label="Chat stream"),
@@ -568,6 +622,7 @@ async def chat_fork(
             user_id=user["id"],
             message_id=req.message_id,
             new_text=req.message if req.mode == "edit" else None,
+            model=_validated_model(req.model),
         )
     except ForbiddenError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

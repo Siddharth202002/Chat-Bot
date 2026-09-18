@@ -1,20 +1,16 @@
 "use client";
 
 import { LogOut, PanelLeft } from "lucide-react";
-import { Badge } from "./ui/Primitives";
 import { IconButton } from "./ui/Button";
 import Logo from "./ui/Logo";
 
 interface NavbarProps {
-  /** True for the whole in-flight window, not just once tokens arrive. */
-  isGenerating: boolean;
   userEmail: string;
   onToggleSidebar: () => void;
   onLogout: () => void;
 }
 
 export default function Navbar({
-  isGenerating,
   userEmail,
   onToggleSidebar,
   onLogout,
@@ -37,11 +33,6 @@ export default function Navbar({
       </div>
 
       <div className="flex min-w-0 items-center gap-2">
-        {isGenerating && (
-          <Badge tone="accent" dot pulse className="shrink-0">
-            Generating
-          </Badge>
-        )}
         <span className="hidden max-w-[180px] truncate text-small text-fg-muted sm:inline">
           {userEmail}
         </span>

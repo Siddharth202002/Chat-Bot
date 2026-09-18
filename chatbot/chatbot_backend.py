@@ -369,6 +369,106 @@ def _get_llm_with_tools() -> Any:
     return _llm_with_tools
 
 
+# Which provider family each chain entry belongs to. Only for display: the
+# model id itself comes off the built model, so overriding GROQ_MODEL in the
+# environment changes what the picker shows without touching this.
+_PROVIDER_FAMILIES: dict[str, str] = {
+    "groq": "Groq",
+    "groq-alt": "Groq",
+    "groq-alt2": "Groq",
+    "gemini": "Google",
+    "gemini-lite": "Google",
+    "openrouter": "OpenRouter",
+}
+
+
+def _model_id_of(bound: Any) -> str:
+    """
+    The model string a chain entry will actually call.
+
+    The chain holds tool-bound runnables, so the model sits one level down in
+    `.bound`. Read rather than tabulated, so it cannot drift from the model
+    that is really configured.
+    """
+    model = getattr(bound, "bound", bound)
+    for attribute in ("model_name", "model"):
+        value = getattr(model, attribute, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _model_label(model_id: str, name: str) -> str:
+    """A short, honest name for the picker: the model id minus the packaging."""
+    label = model_id.split("/")[-1].split(":")[0].strip()
+    return label or name
+
+
+def available_models() -> list[dict[str, Any]]:
+    """
+    The providers a user can actually pick, in chain order.
+
+    Derived from the built chain rather than from a hardcoded list, so it
+    shows exactly what this deployment has keys for -- a provider whose
+    builder returned None (no key) or whose tools would not bind is never
+    offered. Never raises: a deployment with nothing configured has an empty
+    picker, not a broken page.
+    """
+    try:
+        chain = _get_llm_chain()
+    except Exception as exc:
+        logger.warning("No chat providers available to list: %s", exc)
+        return []
+
+    models: list[dict[str, Any]] = []
+    for index, (name, bound) in enumerate(chain):
+        model_id = _model_id_of(bound)
+        models.append(
+            {
+                "id": name,
+                "label": _model_label(model_id, name),
+                "family": _PROVIDER_FAMILIES.get(name, name),
+                "model": model_id,
+                # The head of the chain is what a turn uses when nothing is
+                # picked, which is the only sense in which one is "default".
+                "default": index == 0,
+            }
+        )
+    return models
+
+
+def available_model_ids() -> list[str]:
+    return [model["id"] for model in available_models()]
+
+
+def _ordered_chain(preferred: str | None) -> list[tuple[str, Any]]:
+    """
+    The provider chain with ``preferred`` moved to the front.
+
+    Reordering rather than replacing: the picked model answers when it can,
+    and the rest of the chain still catches a rate limit, which on these free
+    tiers is an everyday event rather than an outage. Callers learn which
+    provider actually answered, so a substitution is visible instead of silent.
+
+    Returns a new list. ``_llm_chain`` is a module global shared by every
+    request, so reordering it in place would leak one user's choice into
+    everyone else's turns.
+    """
+    chain = _get_llm_chain()
+    if not preferred:
+        return chain
+    picked = [entry for entry in chain if entry[0] == preferred]
+    if not picked:
+        # Validated at the API boundary; reaching here means the chain changed
+        # under us (a key removed at runtime). Answering beats failing.
+        logger.warning(
+            "Preferred provider %r is not in the chain; using the default order.",
+            preferred,
+        )
+        return chain
+    return [*picked, *(entry for entry in chain if entry[0] != preferred)]
+
+
 async def _ainvoke_with_fallback(messages: list[BaseMessage]) -> BaseMessage:
     """
     Ask each provider in turn until one answers.
@@ -379,7 +479,7 @@ async def _ainvoke_with_fallback(messages: list[BaseMessage]) -> BaseMessage:
     If every provider fails, the last error is raised so the failure is still
     visible instead of being swallowed.
     """
-    chain = _get_llm_chain()
+    chain = _ordered_chain(_active_provider.get())
     last_error: Exception | None = None
     for index, (name, model) in enumerate(chain):
         try:
@@ -414,6 +514,12 @@ _active_thread_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 # contextvar so the (synchronous) prompt builder can read them without doing an
 # embedding call on every loop of the tool-calling cycle, and so they are never
 # written into the checkpointed message history.
+# The provider the user picked for this turn, if any. A contextvar rather than
+# a parameter because the graph's `chat` node receives only state, so the
+# non-streaming path has no other way to learn the choice.
+_active_provider: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "active_provider", default=None
+)
 _active_memories: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
     # Default is None, not []: a shared mutable default would be one list object
     # across every request that never calls set().
@@ -1726,7 +1832,7 @@ class _StreamReset:
 STREAM_RESET = _StreamReset()
 
 
-class StreamMessageIds:
+class StreamTurnCommitted:
     """
     Yielded once, last, when a turn has been committed to the checkpointer.
 
@@ -1734,18 +1840,29 @@ class StreamMessageIds:
     needs the real ids for the turn it just watched arrive -- otherwise the
     only editable messages would be ones that survived a page reload. Carrying
     them on the stream keeps that to zero extra requests.
+
+    ``answered_by`` is the provider that actually produced the answer. A model
+    the user picked can still be rate-limited, and the chain then answers from
+    the next one; reporting it is what keeps that substitution visible rather
+    than leaving them to believe they tested a model they never reached.
     """
 
-    __slots__ = ("user_message_id", "assistant_message_id")
+    __slots__ = ("user_message_id", "assistant_message_id", "answered_by")
 
-    def __init__(self, user_message_id: str | None, assistant_message_id: str | None):
+    def __init__(
+        self,
+        user_message_id: str | None,
+        assistant_message_id: str | None,
+        answered_by: str | None = None,
+    ):
         self.user_message_id = user_message_id
         self.assistant_message_id = assistant_message_id
+        self.answered_by = answered_by
 
 
 # What a chat stream yields: answer text, plus the two out-of-band markers the
 # transport has to translate into their own SSE events.
-StreamEvent = str | _StreamReset | StreamMessageIds
+StreamEvent = str | _StreamReset | StreamTurnCommitted
 
 # The chain answers from whichever provider is available, and each one has its
 # own house style: Groq's gpt-oss reaches for markdown tables and bold labels,
@@ -2371,7 +2488,12 @@ async def close_backend() -> None:
     _compiled_app = None
 
 
-async def get_response(user_input: str, thread_id: str = "1", user_id: str = "") -> str:
+async def get_response(
+    user_input: str,
+    thread_id: str = "1",
+    user_id: str = "",
+    model: str | None = None,
+) -> str:
     """Send a user message to the chatbot and return the AI response."""
     await ensure_thread_owner(user_id, thread_id, title_seed=user_input)
     config = {
@@ -2381,7 +2503,7 @@ async def get_response(user_input: str, thread_id: str = "1", user_id: str = "")
     }
     compiled_app = await _get_compiled_app()
     with _generation_slot(thread_id):
-        async with _turn_context(user_id, thread_id, user_input):
+        async with _turn_context(user_id, thread_id, user_input, model):
             response = await compiled_app.ainvoke(
                 {"messages": [HumanMessage(content=user_input, id=str(uuid4()))]},
                 config=config,
@@ -2432,29 +2554,37 @@ def _generation_slot(thread_id: str, *, exclusive: bool = False):
 
 
 @contextlib.asynccontextmanager
-async def _turn_context(user_id: str, thread_id: str, query: str):
+async def _turn_context(
+    user_id: str, thread_id: str, query: str, model: str | None = None
+):
     """
     The per-turn ambient state the prompt builder and tools read.
 
     Retrieving memories here rather than inside the loop keeps one embedding
     call per turn, and keeps the retrieved block out of the checkpointed
     history. Shared by the normal and the branching paths so a regenerated
-    turn is built from exactly the same context a fresh one would be.
+    turn is built from exactly the same context a fresh one would be -- which
+    includes the picked model, so Retry can re-answer with a different one.
     """
     memories = await retrieve_memory_context(user_id, query)
     user_token = _active_user_id.set(user_id)
     thread_token = _active_thread_id.set(thread_id)
     memory_token = _active_memories.set(memories)
+    provider_token = _active_provider.set(model or None)
     try:
         yield
     finally:
+        _active_provider.reset(provider_token)
         _active_memories.reset(memory_token)
         _active_thread_id.reset(thread_token)
         _active_user_id.reset(user_token)
 
 
 async def get_response_stream(
-    user_input: str, thread_id: str = "1", user_id: str = ""
+    user_input: str,
+    thread_id: str = "1",
+    user_id: str = "",
+    model: str | None = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     """
     Stream the chatbot response incrementally.
@@ -2467,7 +2597,7 @@ async def get_response_stream(
     }
     compiled_app = await _get_compiled_app()
     with _generation_slot(thread_id):
-        async with _turn_context(user_id, thread_id, user_input):
+        async with _turn_context(user_id, thread_id, user_input, model):
             async for token in _get_response_stream_for_config(
                 compiled_app, config, user_input
             ):
@@ -2550,7 +2680,7 @@ async def _get_response_stream_for_config(
     ]
     # Inject MCP status only for model runtime context.
     working_messages = _messages_for_model([*prior_messages, *delta_messages])
-    provider_chain = _get_llm_chain()
+    provider_chain = _ordered_chain(_active_provider.get())
     emitted_any_text = False
     # Characters currently on the user's screen for this turn. STREAM_RESET
     # takes them back, so this drops to zero with it. Failing over to another
@@ -2787,9 +2917,10 @@ async def _get_response_stream_for_config(
             ),
             None,
         )
-        yield StreamMessageIds(
+        yield StreamTurnCommitted(
             user_message_id=delta_messages[0].id,
             assistant_message_id=answer.id if answer is not None else None,
+            answered_by=answered_by,
         )
 
 
@@ -2945,6 +3076,8 @@ class RegenerationPlan(NamedTuple):
     # checkpoint, so the branch starts from a cleared history instead.
     checkpoint_id: str | None
     mode: str
+    # The provider to try first, or None for the chain's own order.
+    model: str | None = None
 
 
 async def prepare_regeneration(
@@ -2952,6 +3085,7 @@ async def prepare_regeneration(
     user_id: str,
     message_id: str,
     new_text: str | None = None,
+    model: str | None = None,
 ) -> RegenerationPlan:
     """
     Validate an Edit or Retry and work out where to fork.
@@ -2990,6 +3124,7 @@ async def prepare_regeneration(
         user_input=user_input,
         checkpoint_id=checkpoint_id,
         mode="edit" if edited is not None else "retry",
+        model=model,
     )
 
 
@@ -3032,7 +3167,9 @@ async def regenerate_stream(
     # Re-checked here because prepare and run are two awaits apart; the slot
     # is what actually serialises two forks racing on one thread.
     with _generation_slot(plan.thread_id, exclusive=True):
-        async with _turn_context(plan.user_id, plan.thread_id, plan.user_input):
+        async with _turn_context(
+            plan.user_id, plan.thread_id, plan.user_input, plan.model
+        ):
             async for token in _get_response_stream_for_config(
                 compiled_app,
                 config,

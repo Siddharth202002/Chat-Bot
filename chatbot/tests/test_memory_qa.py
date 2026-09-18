@@ -731,7 +731,7 @@ async def test_patch_memory_body_is_not_a_json_object_is_422(db, as_user):
 
 
 async def test_chat_malformed_json_body_is_422(db, as_user, monkeypatch):
-    async def fake_response(message, thread_id="1", user_id=""):
+    async def fake_response(message, thread_id="1", user_id="", model=None):
         return "hi"
 
     monkeypatch.setattr(api_server, "get_response", fake_response)
@@ -768,7 +768,7 @@ async def test_chat_does_not_limit_message_length(db, as_user, monkeypatch):
     """
     calls: list[str] = []
 
-    async def fake_response(message, thread_id="1", user_id=""):
+    async def fake_response(message, thread_id="1", user_id="", model=None):
         calls.append(message)
         return "ok"
 

@@ -138,7 +138,7 @@ async def test_patch_with_an_invalid_type_is_400(db, as_user):
 async def test_chat_schedules_background_extraction(db, as_user, monkeypatch):
     calls: list[tuple] = []
 
-    async def fake_response(message, thread_id="1", user_id=""):
+    async def fake_response(message, thread_id="1", user_id="", model=None):
         return "hello back"
 
     async def fake_memory_turn(user_id, thread_id):
@@ -162,7 +162,7 @@ async def test_chat_schedules_background_extraction(db, as_user, monkeypatch):
 async def test_stream_schedules_background_extraction(db, as_user, monkeypatch):
     calls: list[tuple] = []
 
-    async def fake_stream(message, thread_id="1", user_id=""):
+    async def fake_stream(message, thread_id="1", user_id="", model=None):
         yield "hel"
         yield "lo"
 
@@ -207,7 +207,7 @@ async def test_a_failed_chat_turn_does_not_schedule_extraction(db, as_user, monk
 async def test_background_extraction_failure_does_not_break_the_response(
     db, as_user, monkeypatch
 ):
-    async def fake_response(message, thread_id="1", user_id=""):
+    async def fake_response(message, thread_id="1", user_id="", model=None):
         return "hello back"
 
     monkeypatch.setattr(api_server, "get_response", fake_response)

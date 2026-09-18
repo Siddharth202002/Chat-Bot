@@ -1,7 +1,16 @@
 "use client";
 
 import { cn } from "@/app/lib/utils";
-import { ArrowUp, FileText, MapPin, MapPinOff, Paperclip, Square } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  FileText,
+  MapPin,
+  MapPinOff,
+  Paperclip,
+  Square,
+} from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -13,10 +22,24 @@ import {
 } from "react";
 import { IconButton } from "./ui/Button";
 
+export interface ModelOption {
+  id: string;
+  /** The model itself, e.g. "gpt-oss-120b" — what tells two Groq entries apart. */
+  label: string;
+  /** Provider family, e.g. "Groq". */
+  family: string;
+  model: string;
+  default: boolean;
+}
+
 interface ComposerProps {
   input: string;
   isLoading: boolean;
   isUploadingPdf: boolean;
+  /** Empty until /api/models answers, or when no provider has a key. */
+  models: ModelOption[];
+  selectedModel: string | null;
+  onSelectModel: (id: string) => void;
   /** "welcome" centres the composer under the hero; "docked" pins it to the bottom. */
   variant: "welcome" | "docked";
   onInputChange: (value: string) => void;
@@ -42,6 +65,9 @@ export default function Composer({
   input,
   isLoading,
   isUploadingPdf,
+  models,
+  selectedModel,
+  onSelectModel,
   variant,
   onInputChange,
   onSend,
@@ -55,8 +81,15 @@ export default function Composer({
 }: ComposerProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const dragDepth = useRef(0);
   const menuRef = useRef<HTMLDivElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
+
+  // Fall back to the chain head if nothing is picked yet, so the pill always
+  // names the model that will actually answer.
+  const activeModel =
+    models.find((m) => m.id === selectedModel) ?? models.find((m) => m.default) ?? null;
 
   const canSend = input.trim().length > 0 && !isLoading && !isUploadingPdf;
 
@@ -85,6 +118,24 @@ export default function Composer({
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [menuOpen]);
+
+  useEffect(() => {
+    if (!modelMenuOpen) return;
+
+    function onPointerDown(event: MouseEvent) {
+      if (!modelMenuRef.current?.contains(event.target as Node)) setModelMenuOpen(false);
+    }
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") setModelMenuOpen(false);
+    }
+
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [modelMenuOpen]);
 
   function runMenuAction(action: () => void) {
     setMenuOpen(false);
@@ -153,27 +204,6 @@ export default function Composer({
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          {/* Stop generating — overlays rather than pushing the composer down.
-              Shown for the whole in-flight window, not just once tokens arrive,
-              so a slow first response is still cancellable. */}
-          {isLoading && (
-            <div className="pointer-events-none absolute -top-11 left-0 right-0 flex justify-center">
-              <button
-                type="button"
-                onClick={onStopGenerating}
-                className={cn(
-                  "pointer-events-auto inline-flex items-center gap-2 rounded-full",
-                  "border border-line-strong bg-overlay px-3.5 py-1.5",
-                  "text-small font-medium text-fg-muted shadow-e2",
-                  "transition-colors duration-150 hover:border-accent-muted hover:text-fg active:scale-[0.98]"
-                )}
-              >
-                <Square className="h-3 w-3 fill-current" strokeWidth={0} aria-hidden />
-                Stop generating
-              </button>
-            </div>
-          )}
-
           {/* Drag-and-drop overlay */}
           {isDragging && (
             <div className="animate-fade-in pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-accent-muted bg-overlay/95">
@@ -286,21 +316,111 @@ export default function Composer({
               style={{ maxHeight: MAX_TEXTAREA_HEIGHT }}
             />
 
+            {/* Model picker. Hidden when the deployment has one model or
+                none — a menu with a single entry is just noise. Stays usable
+                mid-generation, since the natural next move after a slow reply
+                is to switch model and retry. */}
+            {models.length > 1 && activeModel && (
+              <div className="relative mb-0.5 shrink-0" ref={modelMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setModelMenuOpen((open) => !open)}
+                  aria-haspopup="menu"
+                  aria-expanded={modelMenuOpen}
+                  title={`${activeModel.family} · ${activeModel.model}`}
+                  className={cn(
+                    "flex h-8 max-w-[9rem] items-center gap-1 rounded-full px-2.5",
+                    "text-micro font-medium text-fg-muted",
+                    "transition-colors duration-150 ease-standard",
+                    "hover:bg-hover hover:text-fg",
+                    modelMenuOpen && "bg-hover text-fg"
+                  )}
+                >
+                  <span className="truncate">{activeModel.label}</span>
+                  <ChevronDown className="h-3 w-3 shrink-0" strokeWidth={2} aria-hidden />
+                </button>
+
+                {modelMenuOpen && (
+                  <div
+                    role="menu"
+                    aria-label="Choose a model"
+                    className={cn(
+                      "animate-fade-in absolute bottom-full right-0 z-30 mb-2 w-64",
+                      "overflow-hidden rounded-lg border border-line bg-overlay p-1 shadow-e3"
+                    )}
+                  >
+                    {models.map((model) => {
+                      const isActive = model.id === activeModel.id;
+                      return (
+                        <button
+                          key={model.id}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={isActive}
+                          onClick={() => {
+                            setModelMenuOpen(false);
+                            onSelectModel(model.id);
+                          }}
+                          className={cn(
+                            "flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left",
+                            "transition-colors duration-150 ease-standard",
+                            isActive ? "bg-accent-subtle text-fg" : "text-fg-muted hover:bg-hover hover:text-fg"
+                          )}
+                        >
+                          <Check
+                            className={cn(
+                              "h-3.5 w-3.5 shrink-0",
+                              isActive ? "text-accent-fg" : "opacity-0"
+                            )}
+                            strokeWidth={2}
+                            aria-hidden
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-small">{model.label}</span>
+                            <span className="block truncate text-micro text-fg-subtle">
+                              {model.family}
+                              {model.default && " · default"}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* One control, two jobs. While a reply is in flight this is the
+                progress indicator *and* the way to cancel it, so the arrow
+                turns into a stop square inside a spinning ring — there is no
+                separate button to hunt for, and no moment where the composer
+                looks idle while the model is working. Live for the whole
+                in-flight window, so a slow first token is still cancellable. */}
             <button
               type="button"
-              onClick={handleSend}
-              disabled={!canSend}
-              aria-label="Send message"
-              title="Send message"
+              onClick={isLoading ? onStopGenerating : handleSend}
+              disabled={!isLoading && !canSend}
+              aria-label={isLoading ? "Stop generating" : "Send message"}
+              title={isLoading ? "Stop generating" : "Send message"}
               className={cn(
-                "mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
+                "relative mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
                 "transition-colors duration-150 ease-standard",
-                canSend
+                isLoading || canSend
                   ? "bg-accent text-white hover:bg-accent-hi active:scale-95"
                   : "cursor-not-allowed bg-hover text-fg-faint"
               )}
             >
-              <ArrowUp className="h-4 w-4" strokeWidth={2.25} />
+              {isLoading ? (
+                <>
+                  <span
+                    className="absolute -inset-0.5 animate-spin rounded-full border-2 border-white/25 border-t-white"
+                    aria-hidden
+                  />
+                  <Square className="h-2.5 w-2.5 fill-current" strokeWidth={0} aria-hidden />
+                </>
+              ) : (
+                <ArrowUp className="h-4 w-4" strokeWidth={2.25} />
+              )}
             </button>
           </div>
         </div>
@@ -309,7 +429,9 @@ export default function Composer({
           {isUploadingPdf ? (
             <>Indexing PDF. You can send your question when it finishes.</>
           ) : isLoading ? (
-            <>Press Enter after the reply finishes to send your next message.</>
+            // The floating "Stop generating" pill is gone, so this is where
+            // the user learns the send button now cancels.
+            <>Generating. Click the stop button to cancel.</>
           ) : (
             <>Zeno AI can make mistakes. Verify important information.</>
           )}

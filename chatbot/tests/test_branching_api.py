@@ -61,6 +61,7 @@ def stub_plan(**overrides: Any) -> chatbot_backend.RegenerationPlan:
         user_input=overrides.get("user_input", "q1"),
         checkpoint_id=overrides.get("checkpoint_id", "ckpt-0"),
         mode=overrides.get("mode", "edit"),
+        model=overrides.get("model"),
     )
 
 
@@ -82,6 +83,7 @@ def install_backend(
             message_id=kwargs["message_id"],
             user_input=kwargs.get("new_text") or "q1",
             mode="edit" if kwargs.get("new_text") else "retry",
+            model=kwargs.get("model"),
         )
 
     scripted = ["Hello"] if events is None else events
@@ -133,6 +135,7 @@ def test_edit_passes_the_new_text_through(client, monkeypatch):
         "user_id": ALICE["id"],
         "message_id": "m1",
         "new_text": "under 3000",
+        "model": None,
     }
 
 
@@ -209,7 +212,7 @@ def test_an_edited_turn_streams_in_the_normal_event_shapes(client, monkeypatch):
             chatbot_backend.STREAM_RESET,
             "hotels under ",
             "3000.",
-            chatbot_backend.StreamMessageIds("user-new", "ai-new"),
+            chatbot_backend.StreamTurnCommitted("user-new", "ai-new"),
         ],
     )
     response = client.post(
@@ -224,7 +227,10 @@ def test_an_edited_turn_streams_in_the_normal_event_shapes(client, monkeypatch):
         {"reset": True},
         {"token": "hotels under "},
         {"token": "3000."},
-        {"message_ids": {"user": "user-new", "assistant": "ai-new"}},
+        {
+            "message_ids": {"user": "user-new", "assistant": "ai-new"},
+            "answered_by": None,
+        },
         {"done": True},
     ]
 
@@ -234,7 +240,7 @@ def test_the_normal_stream_reports_message_ids_too(client, monkeypatch):
 
     async def stream(*_args, **_kwargs):
         yield "hi"
-        yield chatbot_backend.StreamMessageIds("u1", "a1")
+        yield chatbot_backend.StreamTurnCommitted("u1", "a1")
 
     monkeypatch.setattr(api_server, "get_response_stream", stream)
     response = client.post(
@@ -242,7 +248,7 @@ def test_the_normal_stream_reports_message_ids_too(client, monkeypatch):
     )
     assert frames(response) == [
         {"token": "hi"},
-        {"message_ids": {"user": "u1", "assistant": "a1"}},
+        {"message_ids": {"user": "u1", "assistant": "a1"}, "answered_by": None},
         {"done": True},
     ]
 

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import ChatArea from "./components/ChatArea";
-import Composer from "./components/Composer";
+import Composer, { type ModelOption } from "./components/Composer";
 import LocationStatus from "./components/LocationStatus";
 import { type Message } from "./components/MessageBubble";
 import Navbar from "./components/Navbar";
@@ -32,6 +32,7 @@ interface AuthUser {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const SIDEBAR_PREF_KEY = "zeno-chat:sidebar-open";
+const MODEL_PREF_KEY = "zeno-chat:model";
 
 const IDLE_RAG: RagState = {
   status: "idle",
@@ -65,11 +66,16 @@ function endpointFor(req: TurnRequest, threadId: string): string {
     : `${API_URL}/api/chat/${encodeURIComponent(threadId)}/fork`;
 }
 
-function bodyFor(req: TurnRequest, threadId: string, text: string): unknown {
-  if (req.kind === "send") return { message: text, thread_id: threadId };
+function bodyFor(
+  req: TurnRequest,
+  threadId: string,
+  text: string,
+  model: string | null
+): unknown {
+  if (req.kind === "send") return { message: text, thread_id: threadId, model };
   if (req.kind === "edit")
-    return { message_id: req.target.serverId, mode: "edit", message: text };
-  return { message_id: req.target.serverId, mode: "retry" };
+    return { message_id: req.target.serverId, mode: "edit", message: text, model };
+  return { message_id: req.target.serverId, mode: "retry", model };
 }
 
 async function readErrorDetail(res: Response): Promise<string | null> {
@@ -130,6 +136,8 @@ export default function Home() {
   const [failedMessage, setFailedMessage] = useState<string | null>(null);
   /** Client id of the user message open in the inline editor, if any. */
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [rag, setRag] = useState<RagState>(IDLE_RAG);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -155,6 +163,10 @@ export default function Home() {
   // the turn runner (and every memoised bubble's callbacks) on every token.
   const messagesRef = useRef<Message[]>(messages);
   messagesRef.current = messages;
+  const selectedModelRef = useRef<string | null>(selectedModel);
+  selectedModelRef.current = selectedModel;
+  const modelsRef = useRef<ModelOption[]>(models);
+  modelsRef.current = models;
 
   const resetChatState = useCallback(() => {
     if (abortControllerRef.current) {
@@ -295,6 +307,41 @@ export default function Home() {
     }
   }, [currentUser, resetChatState]);
 
+  const fetchModels = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const res = await fetch(`${API_URL}/api/models`, { credentials: "include" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: ModelOption[] = Array.isArray(data.models) ? data.models : [];
+      setModels(list);
+
+      // A remembered id can outlive the model itself — an API key removed from
+      // the deployment drops it from the chain — so it is only honoured if the
+      // server still offers it. Otherwise fall back to the chain head.
+      let stored: string | null = null;
+      try {
+        stored = window.localStorage.getItem(MODEL_PREF_KEY);
+      } catch {
+        // Private mode / blocked storage: the default is a fine answer.
+      }
+      setSelectedModel(
+        stored && list.some((m) => m.id === stored) ? stored : data.default ?? null
+      );
+    } catch (err) {
+      console.error("Failed to fetch models:", err);
+    }
+  }, [currentUser]);
+
+  const selectModel = useCallback((id: string) => {
+    setSelectedModel(id);
+    try {
+      window.localStorage.setItem(MODEL_PREF_KEY, id);
+    } catch {
+      // The choice still applies to this session; it just will not persist.
+    }
+  }, []);
+
   const fetchRagStatus = useCallback(async () => {
     if (!currentUser) return;
     try {
@@ -333,7 +380,8 @@ export default function Home() {
     if (!currentUser) return;
     fetchHistory();
     fetchRagStatus();
-  }, [currentUser, fetchHistory, fetchRagStatus]);
+    fetchModels();
+  }, [currentUser, fetchHistory, fetchModels, fetchRagStatus]);
 
   /* ── Sidebar preference ───────────────────────────────────────── */
 
@@ -529,6 +577,7 @@ export default function Home() {
       // Set only once the turn is committed, so its absence at the end is a
       // reliable "nothing was written".
       let committedIds: { user?: string | null; assistant?: string | null } | null = null;
+      let answeredBy: string | null = null;
 
       try {
         // Own-location questions ("what's the weather?", "anything near me?")
@@ -547,7 +596,9 @@ export default function Home() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify(bodyFor(req, threadId, promptText)),
+          body: JSON.stringify(
+            bodyFor(req, threadId, promptText, selectedModelRef.current)
+          ),
           signal: controller.signal,
         });
 
@@ -631,6 +682,8 @@ export default function Home() {
                 // The turn is now in the checkpointer. These are the handles
                 // Edit and Retry will need for it.
                 committedIds = parsed.message_ids;
+                answeredBy =
+                  typeof parsed.answered_by === "string" ? parsed.answered_by : null;
                 continue;
               }
 
@@ -717,11 +770,24 @@ export default function Home() {
             };
           }
           if (!committedIds) return updated;
+          // The chain falls through when the picked model is rate-limited, so
+          // name the model that really answered rather than let the picker
+          // imply one that never ran.
+          const asked = selectedModelRef.current;
+          const substituted =
+            answeredBy && asked && answeredBy !== asked
+              ? modelsRef.current.find((m) => m.id === answeredBy)?.label ?? answeredBy
+              : null;
           // Both ids change on a branch: the re-run writes a new user message
           // as well as a new answer.
           return updated.map((m) => {
             if (m.id === userMsg.id) return { ...m, serverId: committedIds?.user ?? null };
-            if (m.id === assistantId) return { ...m, serverId: committedIds?.assistant ?? null };
+            if (m.id === assistantId)
+              return {
+                ...m,
+                serverId: committedIds?.assistant ?? null,
+                answeredBy: substituted,
+              };
             return m;
           });
         });
@@ -1130,7 +1196,6 @@ export default function Home() {
 
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <Navbar
-          isGenerating={isLoading}
           userEmail={currentUser.email}
           onToggleSidebar={toggleSidebar}
           onLogout={logout}
@@ -1163,6 +1228,9 @@ export default function Home() {
           input={input}
           isLoading={isLoading}
           isUploadingPdf={rag.status === "uploading"}
+          models={models}
+          selectedModel={selectedModel}
+          onSelectModel={selectModel}
           variant={isWelcome ? "welcome" : "docked"}
           onInputChange={setInput}
           onSend={sendMessage}

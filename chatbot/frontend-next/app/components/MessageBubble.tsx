@@ -21,6 +21,12 @@ export interface Message {
    * unavailable until then.
    */
   serverId?: string | null;
+  /**
+   * Set only when the model that answered was NOT the one picked, e.g. the
+   * pick was rate-limited and the chain fell through. Live-stream only: a
+   * reloaded conversation has no record of which model wrote an old reply.
+   */
+  answeredBy?: string | null;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
@@ -396,6 +402,14 @@ function MessageBubbleInner({
               />
             )}
             <time className="text-micro text-fg-faint">{time}</time>
+            {message.answeredBy && (
+              <span
+                className="text-micro text-fg-faint"
+                title="Your chosen model was unavailable, so the next one in the fallback chain answered."
+              >
+                · answered by {message.answeredBy}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -411,6 +425,7 @@ const MessageBubble = memo(MessageBubbleInner, (prev, next) => {
   // offering Edit during a generation, or keep the editor open after cancel.
   if (prev.isEditing !== next.isEditing) return false;
   if (prev.canBranch !== next.canBranch) return false;
+  if (prev.message.answeredBy !== next.message.answeredBy) return false;
   return prev.message.content === next.message.content && prev.message.id === next.message.id;
 });
 
