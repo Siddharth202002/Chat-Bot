@@ -39,6 +39,11 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
+import context_builder
+import context_config
+import context_manager
+import context_summary
+import context_tokens
 import location_config
 import location_service
 import location_state
@@ -92,7 +97,10 @@ _llm_chain: list[tuple[str, Any]] | None = None
 # for a one-line question, quoting OUTPUT_FORMAT_POLICY back at the user -- and
 # unlike Groq it offers no server-side switch to suppress it. The builder is
 # kept, so setting LLM_PROVIDER_CHAIN re-enables it deliberately.
-DEFAULT_PROVIDER_CHAIN = "groq,groq-alt,groq-alt2,gemini,gemini-lite"
+# gemini-lite is absent too: Gemini Flash-Lite is reserved for conversation
+# summarization (context_summary), which builds its own client, so it is kept
+# out of the chat chain and therefore out of the user's model picker.
+DEFAULT_PROVIDER_CHAIN = "groq,groq-alt,groq-alt2,gemini"
 
 # Shown to the user when the whole chain is exhausted. Raw provider errors
 # ("402 payment_required", quota JSON) mean nothing to them and leak billing
@@ -2183,68 +2191,172 @@ async def clear_user_location(user_id: str) -> bool:
     return await location_state.clear_location(user_id)
 
 
-def _messages_for_model(messages: list[BaseMessage]) -> list[BaseMessage]:
+def _context_sections(
+    conversation: list[BaseMessage], summary: str = ""
+) -> context_builder.ContextSections:
     """
-    Inject runtime context on every turn:
+    The runtime context for one model call:
     1) The assistant's identity/persona, so it answers as Zeno AI.
     2) The output format, so an answer looks the same whichever provider in the
        fallback chain happened to serve it.
     3) The location/weather tool-selection policy, so live values always come
        from a tool and a known location is never re-requested from the user.
     4) Spending amounts are in INR and should never be labeled as dollars.
-    5) MCP status context so the assistant can explain when tools are unavailable.
+    5) The rolling summary of turns that are no longer shown verbatim.
+    6) Long-term memories retrieved for this turn.
+    7) RAG and MCP status, so the assistant can explain what is unavailable.
     """
-    system_messages: list[SystemMessage] = [
-        SystemMessage(content=ZENO_IDENTITY_PROMPT),
-        SystemMessage(content=OUTPUT_FORMAT_POLICY),
-        SystemMessage(content=LOCATION_WEATHER_POLICY),
-        SystemMessage(
-            content=(
-                "For spending-analyzer outputs, all expense amounts are in Indian Rupees (INR). "
-                "Never label these amounts as dollars ($). Use INR."
-            )
-        ),
-    ]
-    memory_block = _format_memory_block(_active_memories.get() or [])
-    if memory_block:
-        system_messages.append(SystemMessage(content=memory_block))
+    runtime: list[str] = []
     user_id = _active_user_id.get()
     thread_id = _active_thread_id.get()
     rag_status = get_rag_status(user_id, thread_id) if user_id and thread_id else _default_rag_status
     if rag_status.get("status") == "ready":
-        system_messages.append(
-            SystemMessage(
-                content=(
-                    "A PDF is already indexed and available through the rag_search tool. "
-                    f"Indexed PDF: {rag_status.get('file_name') or 'Document'} "
-                    f"({rag_status.get('pages') or 0} pages, "
-                    f"{rag_status.get('chunks') or 0} chunks). "
-                    "When the user asks about the PDF, the uploaded document, this document, "
-                    "or asks to summarize it, call rag_search first and answer from the "
-                    "retrieved context. Do not ask the user to upload the PDF again."
-                )
-            )
+        runtime.append(
+            "A PDF is already indexed and available through the rag_search tool. "
+            f"Indexed PDF: {rag_status.get('file_name') or 'Document'} "
+            f"({rag_status.get('pages') or 0} pages, "
+            f"{rag_status.get('chunks') or 0} chunks). "
+            "When the user asks about the PDF, the uploaded document, this document, "
+            "or asks to summarize it, call rag_search first and answer from the "
+            "retrieved context. Do not ask the user to upload the PDF again."
         )
     elif rag_status.get("status") == "empty":
-        system_messages.append(
-            SystemMessage(
-                content=(
-                    "No PDF is currently indexed. If the user asks about an uploaded PDF, "
-                    "ask them to upload a PDF first."
-                )
-            )
+        runtime.append(
+            "No PDF is currently indexed. If the user asks about an uploaded PDF, "
+            "ask them to upload a PDF first."
         )
     if _mcp_status_message is not None:
-        system_messages.append(
-            SystemMessage(
-                content=(
-                    "The spending-analyzer MCP tools are currently unavailable. "
-                    f"Reason: {_mcp_status_message}. "
-                    "If the user asks for spending analysis, explain this clearly."
-                )
-            )
+        runtime.append(
+            "The spending-analyzer MCP tools are currently unavailable. "
+            f"Reason: {_mcp_status_message}. "
+            "If the user asks for spending analysis, explain this clearly."
         )
-    return [*system_messages, *messages]
+    return context_builder.ContextSections(
+        system=(
+            ZENO_IDENTITY_PROMPT,
+            OUTPUT_FORMAT_POLICY,
+            LOCATION_WEATHER_POLICY,
+            "For spending-analyzer outputs, all expense amounts are in Indian Rupees (INR). "
+            "Never label these amounts as dollars ($). Use INR.",
+        ),
+        summary=summary,
+        memory=_format_memory_block(_active_memories.get() or []),
+        runtime=tuple(runtime),
+        conversation=conversation,
+    )
+
+
+_context_builder = context_builder.ContextBuilder()
+
+
+def _messages_for_model(
+    messages: list[BaseMessage],
+    summary: context_manager.ContextSummary | None = None,
+) -> list[BaseMessage]:
+    """
+    The full prompt for the main model: system context, then ``messages``.
+
+    ``messages`` is the conversation already windowed by the ContextManager;
+    ``summary`` is the rolling summary standing in for what came before it.
+    """
+    return _context_builder.build(
+        _context_sections(messages, context_manager.summary_text(summary))
+    )
+
+
+# --- Context management ----------------------------------------------------
+#
+# The ContextManager decides, once per turn and before the model is called,
+# whether older history is folded into the rolling summary. The summarizer it
+# uses is configured separately (context_config) and never follows the user's
+# model pick. Built lazily so a missing Gemini key costs nothing until the
+# first fold is needed.
+
+_context_manager: context_manager.ContextManager | None = None
+_tool_tokens_cache: tuple[tuple[Any, ...], int] | None = None
+
+
+def _get_context_manager() -> context_manager.ContextManager:
+    global _context_manager
+    if _context_manager is None:
+        _context_manager = context_manager.ContextManager(
+            context_summary.build_summary_service()
+        )
+    return _context_manager
+
+
+def _system_tokens(counter: context_tokens.TokenCounter) -> int:
+    """Everything the model is sent ahead of the conversation, minus the summary."""
+    return context_tokens.count_messages(
+        counter, _context_builder.preamble(_context_sections([]))
+    )
+
+
+def _tool_schema_tokens(counter: context_tokens.TokenCounter) -> int:
+    """
+    The bound tool definitions' share of every request.
+
+    Providers send the schemas with each call, so they count against the same
+    window as the messages. Cached per tool list; MCP can change it at startup.
+    """
+    global _tool_tokens_cache
+    key = (type(counter).__name__, *(getattr(t, "name", repr(t)) for t in tools))
+    if _tool_tokens_cache is not None and _tool_tokens_cache[0] == key:
+        return _tool_tokens_cache[1]
+    try:
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        schemas = json.dumps([convert_to_openai_tool(t) for t in tools], default=str)
+    except Exception as exc:
+        logger.warning("Could not measure tool schemas (%s).", type(exc).__name__)
+        schemas = ""
+    tokens = counter.count_text(schemas)
+    _tool_tokens_cache = (key, tokens)
+    return tokens
+
+
+async def _plan_context(
+    thread_id: str,
+    prior_messages: list[BaseMessage],
+    summary: context_manager.ContextSummary | None,
+    turn: list[BaseMessage],
+) -> context_manager.ContextPlan | None:
+    """
+    Run the ContextManager for one turn, or return None if it broke.
+
+    None means "send the history exactly as before this feature existed": a
+    bug in context management must cost a larger prompt, never the turn.
+    """
+    try:
+        counter = context_tokens.get_counter(context_config.load().tokenizer)
+        return await _get_context_manager().prepare(
+            thread_id=thread_id,
+            prior_messages=prior_messages,
+            summary=summary,
+            turn=turn,
+            system_tokens=_system_tokens(counter),
+            tool_tokens=_tool_schema_tokens(counter),
+        )
+    except Exception:
+        logger.exception("context_plan_failed thread=%s", thread_id)
+        return None
+
+
+def _window_for_model(
+    messages: list[BaseMessage], summary: context_manager.ContextSummary | None
+) -> tuple[list[BaseMessage], context_manager.ContextSummary | None]:
+    """The graph path's equivalent of a plan: window the state's messages."""
+    try:
+        counter = context_tokens.get_counter(context_config.load().tokenizer)
+        return _get_context_manager().window_for_model(
+            messages,
+            summary,
+            system_tokens=_system_tokens(counter),
+            tool_tokens=_tool_schema_tokens(counter),
+        )
+    except Exception:
+        logger.exception("context_window_failed")
+        return list(messages), None
 
 
 async def _initialize_mcp_client() -> None:
@@ -2331,12 +2443,20 @@ def get_mcp_status() -> dict[str, str]:
 # --- State ---
 class Chat_State(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
+    # The rolling summary and its cursor, as one value so they are always
+    # written together. Living in the checkpoint rather than a side table is
+    # what keeps it correct under Edit/Retry: a fork starts from the summary
+    # as it stood at the fork point, never from an abandoned branch's.
+    # Absent on threads that have never been compressed.
+    context_summary: context_manager.ContextSummary | None
 
 
 # --- Nodes ---
 async def chat(state: Chat_State) -> dict[str, list[BaseMessage]]:
-    messages = state["messages"]
-    response = await _ainvoke_with_fallback(_messages_for_model(messages))
+    conversation, summary = _window_for_model(
+        state["messages"], state.get("context_summary")
+    )
+    response = await _ainvoke_with_fallback(_messages_for_model(conversation, summary))
     return {"messages": [response]}
 
 
@@ -2504,10 +2624,21 @@ async def get_response(
     compiled_app = await _get_compiled_app()
     with _generation_slot(thread_id):
         async with _turn_context(user_id, thread_id, user_input, model):
-            response = await compiled_app.ainvoke(
-                {"messages": [HumanMessage(content=user_input, id=str(uuid4()))]},
-                config=config,
+            state = await compiled_app.aget_state(config)
+            values = getattr(state, "values", None) or {}
+            turn: list[BaseMessage] = [HumanMessage(content=user_input, id=str(uuid4()))]
+            plan = await _plan_context(
+                thread_id,
+                list(values.get("messages", [])),
+                values.get("context_summary"),
+                turn,
             )
+            inputs: dict[str, Any] = {"messages": turn}
+            if plan is not None and plan.summary_changed:
+                # Written with the input, before the chat node reads state,
+                # so the node sees the folded summary and cursor.
+                inputs["context_summary"] = plan.summary
+            response = await compiled_app.ainvoke(inputs, config=config)
             # sanitize_degenerate_text stays on this path only: there is no
             # provider chain to hand the turn to here, so removing a collapse
             # in place is still better than returning it. finalize_text then
@@ -2668,18 +2799,33 @@ async def _get_response_stream_for_config(
     still reachable by checkpoint id while the active branch starts fresh.
     """
     prior_messages: list[BaseMessage] = []
+    prior_summary: context_manager.ContextSummary | None = None
     if not reset_history:
         state = await compiled_app.aget_state(config)
         if state and hasattr(state, "values"):
             prior_messages = list(state.values.get("messages", []))
+            prior_summary = state.values.get("context_summary")
 
     # An explicit id, rather than the one add_messages would assign: this is
     # the handle the client needs back to be able to edit the turn later.
     delta_messages: list[BaseMessage] = [
         HumanMessage(content=user_input, id=str(uuid4()))
     ]
-    # Inject MCP status only for model runtime context.
-    working_messages = _messages_for_model([*prior_messages, *delta_messages])
+    # Compression finishes here, before the first token is yielded, so the
+    # user never sees output from a context that is still being rewritten --
+    # and nothing the summarizer produces is ever part of the stream. Only
+    # prior history is eligible: this turn's message and tool calls are not.
+    plan = await _plan_context(
+        str(config["configurable"].get("thread_id") or ""),
+        prior_messages,
+        prior_summary,
+        delta_messages,
+    )
+    if plan is not None:
+        history, model_summary = plan.history, plan.summary
+    else:
+        history, model_summary = prior_messages, None
+    working_messages = _messages_for_model([*history, *delta_messages], model_summary)
     provider_chain = _ordered_chain(_active_provider.get())
     emitted_any_text = False
     # Characters currently on the user's screen for this turn. STREAM_RESET
@@ -2893,11 +3039,22 @@ async def _get_response_stream_for_config(
                 message.id = str(uuid4())
 
         update: list[BaseMessage] = list(delta_messages)
+        values: dict[str, Any] = {"messages": update}
         if reset_history:
             # add_messages returns everything after a REMOVE_ALL_MESSAGES
             # marker, so the clear and the new turn land in one checkpoint
             # rather than two.
             update.insert(0, RemoveMessage(id=REMOVE_ALL_MESSAGES))
+            # The head being replaced may carry a summary of the discarded
+            # history; the fresh branch must not inherit it.
+            values["context_summary"] = None
+        elif plan is not None and plan.summary_changed:
+            # Persisted in the same checkpoint as the turn: the summary and
+            # its cursor land together or not at all, so an interrupted or
+            # failed turn leaves the previous summary untouched. Written only
+            # when it changed, so a concurrent turn that did not fold can never
+            # overwrite one that did.
+            values["context_summary"] = plan.summary
 
         # Both "chat" and "tools" write `messages`; specify writer node.
         # When `config` carries a checkpoint_id this forks: the new checkpoint
@@ -2905,7 +3062,7 @@ async def _get_response_stream_for_config(
         # are time-ordered, immediately becomes the thread's head.
         await compiled_app.aupdate_state(
             config,
-            {"messages": update},
+            values,
             as_node="chat",
         )
 
