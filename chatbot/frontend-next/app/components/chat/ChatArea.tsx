@@ -5,9 +5,9 @@ import { AlertCircle, ArrowDown, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import MessageBubble, { type Message } from "./MessageBubble";
 import TypingIndicator from "./TypingIndicator";
-import Button from "./ui/Button";
-import Logo from "./ui/Logo";
-import { Skeleton } from "./ui/Primitives";
+import WelcomeHero from "./WelcomeHero";
+import Button from "../ui/Button";
+import { Skeleton } from "../ui/Primitives";
 
 interface ChatAreaProps {
   messages: Message[];
@@ -32,14 +32,14 @@ function HistorySkeleton() {
       {[0, 1, 2].map((i) => (
         <div key={i} className="flex flex-col gap-8">
           <div className="flex justify-end">
-            <Skeleton className="h-9 w-[45%] rounded-lg" />
+            <Skeleton className="h-11 w-[45%] rounded-3xl" />
           </div>
           <div className="flex gap-3">
-            <Skeleton className="h-7 w-7 shrink-0 rounded-full" />
-            <div className="flex w-full flex-col gap-2">
-              <Skeleton className="h-3.5 w-full rounded-sm" />
-              <Skeleton className="h-3.5 w-[92%] rounded-sm" />
-              <Skeleton className="h-3.5 w-[60%] rounded-sm" />
+            <Skeleton className="h-7.5 w-7.5 shrink-0 rounded-lg" />
+            <div className="surface-card flex w-full flex-col gap-2.5 rounded-3xl rounded-tl-lg p-5">
+              <Skeleton className="h-3.5 w-full rounded-full" />
+              <Skeleton className="h-3.5 w-[92%] rounded-full" />
+              <Skeleton className="h-3.5 w-[60%] rounded-full" />
             </div>
           </div>
         </div>
@@ -107,50 +107,48 @@ export default function ChatArea({
 
   const isEmpty = messages.length === 0 && !isLoading && !isLoadingHistory;
 
+  // While a tool is running its card is the progress indicator, so the
+  // generic "thinking" bubble would only repeat it.
+  const last = messages[messages.length - 1];
+  const toolRunning =
+    last?.role === "assistant" && (last.tools ?? []).some((t) => t.status === "running");
+
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    // The welcome screen never scrolls: it keeps its natural height (the page
+    // spacer below the chips gives way first) and has no scroll container.
+    <div className={cn("relative flex flex-col", isEmpty ? "flex-[1_0_auto]" : "min-h-0 flex-1")}>
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+        className={cn("flex flex-1 flex-col", isEmpty ? "overflow-hidden" : "min-h-0 overflow-y-auto")}
       >
         {isEmpty ? (
           /* ══ Welcome hero ══ */
-          <div className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6">
-            <div className="flex w-full max-w-xl flex-col items-center text-center">
-              {/* rounded-xl matches the mark's own 25% radius, so the shadow
-                  follows its corners instead of boxing them in. */}
-              <Logo size={48} className="animate-rise mb-5 rounded-xl shadow-e2" />
-              <h1
-                className="animate-rise text-[1.75rem] leading-tight font-bold tracking-tight text-fg sm:text-display"
-                style={{ animationDelay: "40ms" }}
-              >
-                What can I help you with?
-              </h1>
-              <p
-                className="animate-rise mt-3 max-w-md text-body-lg text-fg-muted"
-                style={{ animationDelay: "80ms" }}
-              >
-                Ask a question, paste some code, or attach a PDF and I&apos;ll answer from it.
-              </p>
-            </div>
+          /* On md+ the hero sits at the bottom of this region and the page adds
+             a matching spacer under the composer, so hero + composer + chips
+             read as one centred group. On phones it stays centred and the
+             composer docks at the bottom. */
+          <div className="flex flex-1 items-center justify-center px-4 py-6 sm:px-6 md:items-end md:pb-7 [@media(max-height:760px)]:py-3">
+            <WelcomeHero />
           </div>
         ) : (
           /* ══ Message feed ══ */
-          <div className="flex flex-1 flex-col px-4 py-6 sm:px-6 lg:px-8">
-            <div className="mx-auto mt-auto flex w-full max-w-3xl flex-col gap-8 pb-2">
+          <div className="flex flex-1 flex-col px-3 py-6 sm:px-6 lg:px-10">
+            <div className="mx-auto mt-auto flex w-full max-w-3xl flex-col gap-7 pb-2">
               {isLoadingHistory ? (
                 <HistorySkeleton />
               ) : (
                 <>
                   {messages
                     .filter((msg, i) => {
-                      // Hide the empty assistant placeholder while the dots are showing.
+                      // Hide the empty assistant placeholder while the dots are
+                      // showing -- unless it already has tool cards to show.
                       if (
                         isLoading &&
                         !isStreaming &&
                         msg.role === "assistant" &&
                         !msg.content &&
+                        !msg.tools?.length &&
                         i === messages.length - 1
                       ) {
                         return false;
@@ -179,12 +177,12 @@ export default function ChatArea({
                       />
                     ))}
 
-                  {isLoading && !isStreaming && <TypingIndicator />}
+                  {isLoading && !isStreaming && !toolRunning && <TypingIndicator />}
 
                   {failedMessage && (
                     <div
                       role="alert"
-                      className="animate-rise flex flex-col gap-3 rounded-lg border border-danger/25 bg-danger-subtle p-3.5 sm:flex-row sm:items-center sm:justify-between"
+                      className="animate-rise flex flex-col gap-3 rounded-3xl border border-danger/20 bg-danger-subtle p-4 sm:flex-row sm:items-center sm:justify-between"
                     >
                       <div className="flex items-start gap-2.5">
                         <AlertCircle
@@ -223,9 +221,9 @@ export default function ChatArea({
           aria-label="Scroll to latest message"
           title="Scroll to latest message"
           className={cn(
-            "animate-fade-in absolute bottom-4 right-4 z-20 flex h-9 w-9 items-center justify-center",
-            "rounded-full border border-line-strong bg-overlay text-fg-muted shadow-e2",
-            "transition-colors duration-150 hover:bg-hover hover:text-fg"
+            "animate-pop-in absolute bottom-3 left-1/2 z-20 flex h-9 w-9 -translate-x-1/2 items-center justify-center",
+            "glass-strong rounded-full text-fg-muted shadow-e2",
+            "transition-colors duration-150 hover:text-accent-fg"
           )}
         >
           <ArrowDown className="h-4 w-4" strokeWidth={1.75} />

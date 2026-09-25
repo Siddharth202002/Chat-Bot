@@ -1868,9 +1868,69 @@ class StreamTurnCommitted:
         self.answered_by = answered_by
 
 
-# What a chat stream yields: answer text, plus the two out-of-band markers the
+class StreamToolActivity:
+    """
+    Yielded around each tool call so the client can show what is running.
+
+    Purely informational: nothing here is stored, and the answer text is
+    unaffected. ``status`` is "running" before the call and "done" or "error"
+    after it. ``args`` and ``data`` are trimmed previews (see
+    ``_tool_args_preview`` / ``_tool_result_preview``), never the raw payloads.
+    """
+
+    __slots__ = ("call_id", "name", "status", "args", "data")
+
+    def __init__(
+        self,
+        call_id: str,
+        name: str,
+        status: str,
+        args: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ):
+        self.call_id = call_id
+        self.name = name
+        self.status = status
+        self.args = args or {}
+        self.data = data
+
+
+# Enough to label a card ("Weather · Goa"), not enough to ship a document.
+_TOOL_ARG_MAX_KEYS = 6
+_TOOL_ARG_MAX_CHARS = 120
+_TOOL_RESULT_MAX_CHARS = 4000
+
+
+def _tool_args_preview(args: Any) -> dict[str, Any]:
+    """Scalar tool arguments, with long strings clipped, for the tool card."""
+    if not isinstance(args, dict):
+        return {}
+    preview: dict[str, Any] = {}
+    for key, value in args.items():
+        if len(preview) >= _TOOL_ARG_MAX_KEYS:
+            break
+        if isinstance(value, str):
+            preview[str(key)] = value[:_TOOL_ARG_MAX_CHARS]
+        elif isinstance(value, (bool, int, float)) or value is None:
+            preview[str(key)] = value
+    return preview
+
+
+def _tool_result_preview(result: Any) -> dict[str, Any] | None:
+    """A tool's result as a JSON object, if it is one and is small."""
+    if isinstance(result, str):
+        if len(result) > _TOOL_RESULT_MAX_CHARS:
+            return None
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return None
+    return result if isinstance(result, dict) else None
+
+
+# What a chat stream yields: answer text, plus the out-of-band markers the
 # transport has to translate into their own SSE events.
-StreamEvent = str | _StreamReset | StreamTurnCommitted
+StreamEvent = str | _StreamReset | StreamTurnCommitted | StreamToolActivity
 
 # The chain answers from whichever provider is available, and each one has its
 # own house style: Groq's gpt-oss reaches for markdown tables and bold labels,
@@ -2981,19 +3041,36 @@ async def _get_response_stream_for_config(
             break
 
         tool_messages: list[ToolMessage] = []
-        for tool_call in ai_message.tool_calls:
+        for call_index, tool_call in enumerate(ai_message.tool_calls):
             tool_name = tool_call["name"]
             tool_args = tool_call.get("args", {})
             tool_call_id = tool_call["id"]
+            activity_id = str(tool_call_id or f"{_round}-{call_index}")
+            args_preview = _tool_args_preview(tool_args)
+            yield StreamToolActivity(activity_id, tool_name, "running", args_preview)
 
             tool_obj = tools_by_name.get(tool_name)
+            tool_failed = False
             if tool_obj is None:
                 result = f"Tool '{tool_name}' is not available."
+                tool_failed = True
             else:
                 try:
                     result = await _invoke_tool(tool_obj, tool_args)
                 except Exception as exc:
                     result = f"Tool '{tool_name}' failed: {exc}"
+                    tool_failed = True
+
+            result_preview = _tool_result_preview(result)
+            if result_preview is not None and "error" in result_preview:
+                tool_failed = True
+            yield StreamToolActivity(
+                activity_id,
+                tool_name,
+                "error" if tool_failed else "done",
+                args_preview,
+                result_preview,
+            )
 
             tool_messages.append(
                 ToolMessage(content=str(result), name=tool_name, tool_call_id=tool_call_id)

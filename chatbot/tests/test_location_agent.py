@@ -872,6 +872,69 @@ async def test_text_streamed_before_a_tool_call_is_retracted(monkeypatch):
     assert "\u200b" not in after
 
 
+async def test_each_tool_call_is_reported_as_running_then_done(monkeypatch):
+    """The client's tool cards are driven by these events, bracketing the call."""
+    class ToolThenAnswerModel:
+        def __init__(self):
+            self.round = 0
+
+        async def astream(self, messages):
+            self.round += 1
+            if self.round == 1:
+                yield _Chunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "geocode_location",
+                            "args": '{"place": "Saharanpur"}',
+                            "id": "call-1",
+                            "index": 0,
+                        }
+                    ],
+                )
+            else:
+                yield AIMessageChunk(content="Found it.")
+
+    async def fake_forward(place, **kwargs):
+        return location_service.Location(
+            latitude=29.96, longitude=77.55, city="Saharanpur", state="Uttar Pradesh",
+            country="India", country_code="IN", timezone="Asia/Kolkata",
+            label="Saharanpur, Uttar Pradesh, India",
+        )
+
+    install_model(monkeypatch, ToolThenAnswerModel())
+    monkeypatch.setattr(chatbot_backend.location_service, "forward_geocode", fake_forward)
+
+    emitted = [
+        item
+        async for item in chatbot_backend._get_response_stream_for_config(
+            _stream_reset_app(), {"configurable": {"thread_id": "t"}}, "find saharanpur"
+        )
+    ]
+
+    activity = [e for e in emitted if isinstance(e, chatbot_backend.StreamToolActivity)]
+    assert [(a.call_id, a.name, a.status) for a in activity] == [
+        ("call-1", "geocode_location", "running"),
+        ("call-1", "geocode_location", "done"),
+    ]
+    assert activity[0].args == {"place": "Saharanpur"}
+    # The finished event carries the tool's JSON result for the card to render.
+    assert activity[1].data is not None
+    # Activity never leaks into the answer text.
+    assert "".join(e for e in emitted if isinstance(e, str)) == "Found it."
+
+
+def test_tool_previews_are_trimmed():
+    args = chatbot_backend._tool_args_preview(
+        {"query": "x" * 500, "nested": {"a": 1}, "n": 3}
+    )
+    assert args == {"query": "x" * 120, "n": 3}
+    assert chatbot_backend._tool_result_preview("not json") is None
+    assert chatbot_backend._tool_result_preview('["a list"]') is None
+    assert chatbot_backend._tool_result_preview("{" + " " * 5000 + "}") is None
+    assert chatbot_backend._tool_result_preview('{"ok": 1}') == {"ok": 1}
+
+
 async def test_a_tool_calling_rounds_text_is_not_persisted(monkeypatch):
     """
     The filler must not reach history either.

@@ -1,14 +1,17 @@
 "use client";
 
-import { cn } from "@/app/lib/utils";
 import { closeDanglingMarkup } from "@/app/lib/streamingMarkdown";
-import { Check, Copy, Pencil, RotateCcw, Sparkles } from "lucide-react";
+import type { ToolActivity } from "@/app/lib/tools";
+import { cn } from "@/app/lib/utils";
+import { Check, Copy, Pencil, RotateCcw } from "lucide-react";
 import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
-import Button from "./ui/Button";
+import ToolActivityList from "../tools/ToolCard";
+import Button from "../ui/Button";
+import Logo from "../ui/Logo";
 
 export interface Message {
   id: string;
@@ -27,6 +30,8 @@ export interface Message {
    * reloaded conversation has no record of which model wrote an old reply.
    */
   answeredBy?: string | null;
+  /** Tool calls made while producing this answer. Live-stream only. */
+  tools?: ToolActivity[];
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
@@ -110,7 +115,7 @@ function CopyButton({
       aria-label={copied ? "Copied" : label}
       title={copied ? "Copied" : label}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-micro font-medium",
+        "inline-flex h-7 w-7 items-center justify-center rounded-full text-micro font-medium",
         "text-fg-subtle transition-colors duration-150 hover:bg-hover hover:text-fg",
         className
       )}
@@ -144,7 +149,7 @@ function ActionButton({
       aria-label={label}
       title={label}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-micro font-medium",
+        "inline-flex h-7 w-7 items-center justify-center rounded-full text-micro font-medium",
         "text-fg-subtle transition-colors duration-150 hover:bg-hover hover:text-fg",
         "disabled:pointer-events-none disabled:text-fg-faint"
       )}
@@ -210,7 +215,7 @@ function MessageEditor({
   }
 
   return (
-    <div className="w-full rounded-lg border border-accent-muted/40 bg-accent-subtle px-3 py-2.5">
+    <div className="glass-strong w-full rounded-3xl px-4 py-3 shadow-focus">
       <textarea
         ref={textareaRef}
         value={value}
@@ -261,12 +266,16 @@ const markdownComponents = {
     }
 
     return (
-      <div className="my-4 overflow-hidden rounded-lg border border-line bg-[#12111a]">
-        <div className="flex items-center justify-between border-b border-line bg-hover/60 px-3 py-1.5">
-          <span className="text-micro font-medium tracking-wide text-fg-muted">
+      <div className="my-4 overflow-hidden rounded-2xl bg-[var(--code-bg)] shadow-e2">
+        <div className="flex items-center justify-between bg-[var(--code-header)] py-1 pl-4 pr-1.5">
+          <span className="text-micro font-medium tracking-wide text-white/60">
             {labelFor(match[1])}
           </span>
-          <CopyButton text={codeString} label="Copy code" />
+          <CopyButton
+            text={codeString}
+            label="Copy code"
+            className="text-white/55 hover:bg-white/10 hover:text-white"
+          />
         </div>
         <div className="overflow-x-auto">
           <SyntaxHighlighter
@@ -340,14 +349,14 @@ function MessageBubbleInner({
         className="animate-rise group flex justify-end"
         style={{ animationDelay: `${Math.min(index, 6) * 30}ms` }}
       >
-        <div className="flex max-w-[85%] flex-col items-end sm:max-w-[75%]">
-          <div className="md md-on-user rounded-lg rounded-br-sm border border-accent-muted/40 bg-accent-subtle px-4 py-2.5 text-fg">
+        <div className="flex max-w-[88%] flex-col items-end sm:max-w-[75%]">
+          <div className="md md-on-user bg-brand rounded-3xl rounded-br-lg px-4.5 py-3 shadow-glow">
             <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
               {contentStr}
             </ReactMarkdown>
           </div>
-          <div className="mt-1 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
-            <time className="pr-1 text-micro text-fg-faint">{time}</time>
+          <div className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+            <time className="pr-1 text-micro text-fg-subtle">{time}</time>
             <CopyButton text={contentStr} label="Copy message" />
             {onStartEdit && (
               <ActionButton
@@ -363,35 +372,35 @@ function MessageBubbleInner({
     );
   }
 
+  const tools = message.tools ?? [];
+
   return (
     <div
       className="animate-rise group flex gap-3"
       style={{ animationDelay: `${Math.min(index, 6) * 30}ms` }}
     >
-      <span
-        className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-accent-muted/50 bg-accent-subtle"
-        aria-hidden
-      >
-        <Sparkles className="h-3.5 w-3.5 text-accent-fg" strokeWidth={1.75} />
-      </span>
+      {/* rounded-lg follows the mark's own corner radius so the shadow does too */}
+      <Logo size={30} className="mt-0.5 hidden rounded-lg shadow-e2 sm:block" />
 
-      <div className="min-w-0 flex-1">
-        <div
-          className={cn("md message-body", isStreaming && "streaming-cursor")}
-        >
-          {contentStr ? (
-            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
-              {/* Mid-stream the buffer is usually cut mid-token, so the
-                  half-written markup is closed for display only -- see
-                  closeDanglingMarkup. The stored message is never touched. */}
-              {isStreaming ? closeDanglingMarkup(contentStr) : contentStr}
-            </ReactMarkdown>
-          ) : null}
-        </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+        {tools.length > 0 && <ToolActivityList tools={tools} />}
+
+        {contentStr && (
+          <div className="surface-card rounded-3xl rounded-tl-lg px-4.5 py-3.5 shadow-e1 sm:px-5 sm:py-4">
+            <div className={cn("md message-body", isStreaming && "streaming-cursor")}>
+              <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
+                {/* Mid-stream the buffer is usually cut mid-token, so the
+                    half-written markup is closed for display only -- see
+                    closeDanglingMarkup. The stored message is never touched. */}
+                {isStreaming ? closeDanglingMarkup(contentStr) : contentStr}
+              </ReactMarkdown>
+            </div>
+          </div>
+        )}
 
         {/* Action row — revealed on hover, and always present for keyboard users */}
         {!isStreaming && contentStr && (
-          <div className="mt-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+          <div className="-mt-1 flex items-center gap-0.5 pl-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
             <CopyButton text={contentStr} label="Copy response" />
             {onRetry && (
               <ActionButton
@@ -401,10 +410,10 @@ function MessageBubbleInner({
                 onClick={() => onRetry(message)}
               />
             )}
-            <time className="text-micro text-fg-faint">{time}</time>
+            <time className="pl-1 text-micro text-fg-subtle">{time}</time>
             {message.answeredBy && (
               <span
-                className="text-micro text-fg-faint"
+                className="text-micro text-fg-subtle"
                 title="Your chosen model was unavailable, so the next one in the fallback chain answered."
               >
                 · answered by {message.answeredBy}
@@ -426,6 +435,9 @@ const MessageBubble = memo(MessageBubbleInner, (prev, next) => {
   if (prev.isEditing !== next.isEditing) return false;
   if (prev.canBranch !== next.canBranch) return false;
   if (prev.message.answeredBy !== next.message.answeredBy) return false;
+  // Tool cards update while the answer has no text yet, i.e. before the
+  // bubble counts as streaming, so they need their own check.
+  if (prev.message.tools !== next.message.tools) return false;
   return prev.message.content === next.message.content && prev.message.id === next.message.id;
 });
 

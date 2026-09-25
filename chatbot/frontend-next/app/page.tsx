@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
-import ChatArea from "./components/ChatArea";
-import Composer, { type ModelOption } from "./components/Composer";
-import LocationStatus from "./components/LocationStatus";
-import { type Message } from "./components/MessageBubble";
-import Navbar from "./components/Navbar";
-import Sidebar, { type ChatSummary, type RagState } from "./components/Sidebar";
-import SuggestionGrid from "./components/SuggestionGrid";
+import ChatArea from "./components/chat/ChatArea";
+import Composer from "./components/chat/Composer";
+import LocationStatus from "./components/chat/LocationStatus";
+import { type Message } from "./components/chat/MessageBubble";
+import { type ModelOption } from "./components/chat/ModelPicker";
+import SuggestionGrid from "./components/chat/SuggestionGrid";
+import Header from "./components/layout/Header";
+import Sidebar, { type ChatSummary, type RagState } from "./components/layout/Sidebar";
 import Button from "./components/ui/Button";
 import ConfirmDialog from "./components/ui/ConfirmDialog";
 import Logo from "./components/ui/Logo";
@@ -15,7 +16,9 @@ import { useToast } from "./components/ui/Toast";
 import { useUserLocation } from "./hooks/useUserLocation";
 import { needsLocation } from "./lib/location";
 import { closeDanglingMarkup } from "./lib/streamingMarkdown";
+import { parseToolActivity, upsertToolActivity } from "./lib/tools";
 import { useIsDesktop } from "./lib/useMediaQuery";
+import { useTheme } from "./lib/useTheme";
 
 interface RagStatusResponse {
   status?: string;
@@ -117,6 +120,7 @@ function titleFor(messages: Message[]): string {
 export default function Home() {
   const toast = useToast();
   const isDesktop = useIsDesktop();
+  const { theme, setTheme } = useTheme();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -696,6 +700,23 @@ export default function Home() {
                 continue;
               }
 
+              if (parsed.tool) {
+                // Progress for one tool call. It is attached to this turn's
+                // answer so the card renders above the text it produced; a
+                // reset drops the text but not the record of what ran.
+                const activity = parseToolActivity(parsed.tool);
+                if (activity) {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantId
+                        ? { ...m, tools: upsertToolActivity(m.tools, activity) }
+                        : m
+                    )
+                  );
+                }
+                continue;
+              }
+
               if (parsed.token !== undefined) {
                 const token = typeof parsed.token === "string"
                   ? parsed.token
@@ -1093,56 +1114,73 @@ export default function Home() {
 
   if (isCheckingAuth) {
     return (
-      <div className="flex h-dvh w-full items-center justify-center bg-canvas text-small text-fg-muted">
-        Checking session...
+      <div className="app-backdrop flex h-dvh w-full flex-col items-center justify-center gap-4">
+        <div className="relative">
+          <div className="hero-orb" aria-hidden />
+          <Logo size={52} className="animate-float relative rounded-2xl shadow-glow" />
+        </div>
+        <p className="relative text-small font-medium text-fg-muted">Checking session…</p>
       </div>
     );
   }
 
   if (!currentUser) {
+    const inputClass =
+      "h-11 w-full rounded-2xl border border-line bg-raised/80 px-4 text-small text-fg outline-none " +
+      "transition-[border-color,box-shadow] duration-150 placeholder:text-fg-subtle " +
+      "focus:border-accent-muted focus:shadow-focus";
     return (
-      <main className="flex min-h-dvh w-full items-center justify-center bg-canvas px-4">
+      <main className="app-backdrop flex min-h-dvh w-full items-center justify-center overflow-y-auto px-4 py-10">
         <form
-          className="w-full max-w-sm rounded-lg border border-line bg-raised p-5 shadow-e2"
+          className="animate-dialog-in glass-frame relative w-full max-w-sm rounded-[2rem] p-7 shadow-e3 sm:p-8"
           onSubmit={(event) => {
             event.preventDefault();
             submitAuth();
           }}
         >
-          <div className="mb-5">
-            <Logo size={40} className="mb-3 rounded-[10px] shadow-e2" />
-            <h1 className="text-title-sm font-semibold text-fg">Zeno AI</h1>
-            <p className="mt-1 text-small text-fg-muted">
-              {authMode === "login" ? "Sign in to your chats." : "Create your account."}
+          <div className="mb-7 flex flex-col items-center text-center">
+            <div className="relative mb-5">
+              <div className="hero-orb" aria-hidden />
+              <Logo size={56} className="relative rounded-2xl shadow-glow" />
+            </div>
+            <h1 className="text-h1 text-fg">
+              {authMode === "login" ? "Welcome back" : "Create your account"}
+            </h1>
+            <p className="mt-1.5 text-small text-fg-muted">
+              {authMode === "login"
+                ? "Sign in to Zeno AI to pick up where you left off."
+                : "Your AI assistant is one step away."}
             </p>
           </div>
 
-          <label className="mb-3 block">
-            <span className="mb-1 block text-small font-medium text-fg">Email</span>
+          <label className="mb-3.5 block">
+            <span className="mb-1.5 block pl-1 text-small font-medium text-fg">Email</span>
             <input
               type="email"
               value={authEmail}
               onChange={(event) => setAuthEmail(event.target.value)}
               autoComplete="email"
-              className="h-10 w-full rounded-md border border-line bg-canvas px-3 text-small text-fg outline-none focus:border-focus"
+              placeholder="you@example.com"
+              className={inputClass}
               required
             />
           </label>
 
-          <label className="mb-4 block">
-            <span className="mb-1 block text-small font-medium text-fg">Password</span>
+          <label className="mb-6 block">
+            <span className="mb-1.5 block pl-1 text-small font-medium text-fg">Password</span>
             <input
               type="password"
               value={authPassword}
               onChange={(event) => setAuthPassword(event.target.value)}
               autoComplete={authMode === "login" ? "current-password" : "new-password"}
               minLength={8}
-              className="h-10 w-full rounded-md border border-line bg-canvas px-3 text-small text-fg outline-none focus:border-focus"
+              placeholder="At least 8 characters"
+              className={inputClass}
               required
             />
           </label>
 
-          <Button type="submit" variant="primary" block disabled={authLoading}>
+          <Button type="submit" variant="primary" block disabled={authLoading} className="h-11">
             {authLoading
               ? "Please wait..."
               : authMode === "login"
@@ -1152,7 +1190,7 @@ export default function Home() {
 
           <button
             type="button"
-            className="mt-4 w-full text-center text-small text-accent-fg hover:underline"
+            className="mt-5 w-full text-center text-small font-medium text-accent-fg hover:underline"
             onClick={() => {
               setAuthMode((prev) => (prev === "login" ? "register" : "login"));
               setAuthPassword("");
@@ -1168,7 +1206,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-dvh w-full overflow-hidden bg-canvas">
+    <div className="app-backdrop flex h-dvh w-full md:p-3 lg:p-4">
       <input
         ref={pdfInputRef}
         type="file"
@@ -1177,80 +1215,94 @@ export default function Home() {
         onChange={handlePdfInputChange}
       />
 
-      <Sidebar
-        chatHistory={chatHistory}
-        threadId={threadId}
-        historyLoading={historyLoading}
-        historyError={historyError}
-        onRetryHistory={fetchHistory}
-        onNewChat={handleNewChat}
-        onLoadChat={loadChat}
-        onRequestDelete={setPendingDelete}
-        onRequestDeleteAll={() => setPendingDeleteAll(true)}
-        rag={rag}
-        isOpen={sidebarOpen}
-        isDesktop={isDesktop}
-        onClose={closeSidebar}
-        onToggle={toggleSidebar}
-      />
-
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <Navbar
+      {/* The app frame: one large glass panel, as in the reference. Full-bleed
+          on phones, where a margin would only waste width. */}
+      <div className="glass-frame relative flex h-full w-full overflow-hidden border-0 md:rounded-[2rem] md:border md:shadow-e3">
+        <Sidebar
+          chatHistory={chatHistory}
+          threadId={threadId}
+          historyLoading={historyLoading}
+          historyError={historyError}
+          onRetryHistory={fetchHistory}
+          onNewChat={handleNewChat}
+          onLoadChat={loadChat}
+          onRequestDelete={setPendingDelete}
+          onRequestDeleteAll={() => setPendingDeleteAll(true)}
+          rag={rag}
+          isOpen={sidebarOpen}
+          isDesktop={isDesktop}
+          onClose={closeSidebar}
+          onToggle={toggleSidebar}
           userEmail={currentUser.email}
-          onToggleSidebar={toggleSidebar}
           onLogout={logout}
+          theme={theme}
+          onThemeChange={setTheme}
         />
 
-        <ChatArea
-          messages={messages}
-          isLoading={isLoading}
-          isStreaming={isStreaming}
-          isLoadingHistory={isLoadingHistory}
-          failedMessage={failedMessage}
-          onRetry={retryFailed}
-          editingId={editingId}
-          onStartEdit={startEdit}
-          onCancelEdit={cancelEdit}
-          onSubmitEdit={submitEdit}
-          onRegenerate={regenerate}
-        />
-
-        {!locationDismissed && (
-          <LocationStatus
-            status={locationStatus}
-            message={locationMessage}
-            onSubmitCity={submitManualCity}
-            onDismiss={dismissLocation}
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <Header
+            onToggleSidebar={toggleSidebar}
+            onNewChat={handleNewChat}
+            models={models}
+            selectedModel={selectedModel}
+            onSelectModel={selectModel}
           />
-        )}
 
-        <Composer
-          input={input}
-          isLoading={isLoading}
-          isUploadingPdf={rag.status === "uploading"}
-          models={models}
-          selectedModel={selectedModel}
-          onSelectModel={selectModel}
-          variant={isWelcome ? "welcome" : "docked"}
-          onInputChange={setInput}
-          onSend={sendMessage}
-          onStopGenerating={handleStopGenerating}
-          onAttach={openPdfPicker}
-          onDropPdf={uploadPdf}
-          onRequestLocation={ensureLocation}
-          onClearLocation={clearLocation}
-          locationLabel={userLocation?.label ?? null}
-          textareaRef={composerRef}
-        />
-
-        {isWelcome && (
-          <SuggestionGrid
-            onSelect={sendMessage}
-            disabled={isLoading || rag.status === "uploading"}
+          <ChatArea
+            messages={messages}
+            isLoading={isLoading}
+            isStreaming={isStreaming}
+            isLoadingHistory={isLoadingHistory}
+            failedMessage={failedMessage}
+            onRetry={retryFailed}
+            editingId={editingId}
+            onStartEdit={startEdit}
+            onCancelEdit={cancelEdit}
+            onSubmitEdit={submitEdit}
+            onRegenerate={regenerate}
           />
-        )}
-      </main>
 
+          {!locationDismissed && (
+            <LocationStatus
+              status={locationStatus}
+              message={locationMessage}
+              onSubmitCity={submitManualCity}
+              onDismiss={dismissLocation}
+            />
+          )}
+
+          <Composer
+            input={input}
+            isLoading={isLoading}
+            isUploadingPdf={rag.status === "uploading"}
+            variant={isWelcome ? "welcome" : "docked"}
+            onInputChange={setInput}
+            onSend={sendMessage}
+            onStopGenerating={handleStopGenerating}
+            onAttach={openPdfPicker}
+            onDropPdf={uploadPdf}
+            onRequestLocation={ensureLocation}
+            onClearLocation={clearLocation}
+            locationLabel={userLocation?.label ?? null}
+            textareaRef={composerRef}
+          />
+
+          {isWelcome && (
+            <>
+              <SuggestionGrid
+                onSelect={sendMessage}
+                disabled={isLoading || rag.status === "uploading"}
+              />
+              {/* Balances the hero above so the welcome group sits centred.
+                  Phones skip it and keep the composer at the bottom. */}
+              <div className="hidden flex-[0.55] md:block" aria-hidden />
+            </>
+          )}
+        </main>
+      </div>
+
+      {/* Outside the frame: its backdrop-filter would otherwise trap the
+          dialogs' fixed positioning inside it. */}
       <ConfirmDialog
         open={pendingDelete !== null}
         title="Delete chat?"
