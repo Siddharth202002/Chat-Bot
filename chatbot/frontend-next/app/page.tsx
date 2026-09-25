@@ -1115,11 +1115,8 @@ export default function Home() {
   if (isCheckingAuth) {
     return (
       <div className="app-backdrop flex h-dvh w-full flex-col items-center justify-center gap-4">
-        <div className="relative">
-          <div className="hero-orb" aria-hidden />
-          <Logo size={52} className="animate-float relative rounded-2xl shadow-glow" />
-        </div>
-        <p className="relative text-small font-medium text-fg-muted">Checking session…</p>
+        <Logo size={52} className="rounded-2xl shadow-e2" />
+        <p className="text-small font-medium text-fg-muted">Checking session…</p>
       </div>
     );
   }
@@ -1139,10 +1136,7 @@ export default function Home() {
           }}
         >
           <div className="mb-7 flex flex-col items-center text-center">
-            <div className="relative mb-5">
-              <div className="hero-orb" aria-hidden />
-              <Logo size={56} className="relative rounded-2xl shadow-glow" />
-            </div>
+            <Logo size={56} className="mb-5 rounded-2xl shadow-e2" />
             <h1 className="text-h1 text-fg">
               {authMode === "login" ? "Welcome back" : "Create your account"}
             </h1>
@@ -1206,7 +1200,7 @@ export default function Home() {
   }
 
   return (
-    <div className="app-backdrop flex h-dvh w-full md:p-3 lg:p-4">
+    <div className="app-backdrop flex h-dvh w-full">
       <input
         ref={pdfInputRef}
         type="file"
@@ -1215,9 +1209,11 @@ export default function Home() {
         onChange={handlePdfInputChange}
       />
 
-      {/* The app frame: one large glass panel, as in the reference. Full-bleed
-          on phones, where a margin would only waste width. */}
-      <div className="glass-frame relative flex h-full w-full overflow-hidden border-0 md:rounded-[2rem] md:border md:shadow-e3">
+      {/* The app fills the whole viewport: a light tint over the drifting
+          backdrop. No backdrop-filter here -- blurring a full-screen layer over
+          a moving gradient would re-run the blur every frame for no visible
+          gain. */}
+      <div className="relative flex h-full w-full overflow-hidden bg-[var(--glass-frame)]">
         <Sidebar
           chatHistory={chatHistory}
           threadId={threadId}

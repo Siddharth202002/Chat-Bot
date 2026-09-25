@@ -28,8 +28,10 @@ export default function SuggestionGrid({
   disabled?: boolean;
 }) {
   return (
-    <div className="shrink-0 px-4 pb-4 pt-1 sm:px-6 lg:px-8">
-      <ul className="mx-auto grid w-full max-w-xs grid-cols-1 gap-2 sm:max-w-lg sm:grid-cols-2">
+    <div className="shrink-0 px-4 pb-5 pt-3 sm:px-6 lg:px-8">
+      {/* Chips size to their labels and wrap; the max width is what makes six
+          of them settle into two rows of three (a 2 x 2 on phones). */}
+      <ul className="mx-auto flex w-full max-w-[40rem] flex-wrap justify-center gap-2.5 sm:gap-3">
         {SUGGESTIONS.map(({ icon: Icon, label, text, tone }, i) => (
           // Phones get the first four; six stacked chips push the composer off-screen.
           <li key={text} className={cn(i >= 4 && "max-sm:hidden")}>
@@ -40,8 +42,8 @@ export default function SuggestionGrid({
               title={text}
               style={{ animationDelay: `${120 + i * 35}ms` }}
               className={cn(
-                "animate-rise group flex w-full items-center gap-2 rounded-full",
-                "surface-card py-1.5 pl-1.5 pr-3.5 text-left shadow-e1",
+                "animate-rise group flex h-10 items-center gap-2.5 rounded-full",
+                "surface-card pl-1.5 pr-4 text-left shadow-e1",
                 "text-small font-medium text-fg-muted",
                 "transition-[color,box-shadow,transform] duration-150 ease-standard",
                 "hover:-translate-y-px hover:text-fg hover:shadow-e2",
@@ -50,14 +52,14 @@ export default function SuggestionGrid({
             >
               <span
                 className={cn(
-                  "flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-full",
+                  "flex h-7 w-7 shrink-0 items-center justify-center rounded-full",
                   TONE_CLASSES[tone]
                 )}
                 aria-hidden
               >
                 <Icon className="h-3.5 w-3.5" strokeWidth={2} />
               </span>
-              <span className="truncate">{label}</span>
+              <span className="whitespace-nowrap">{label}</span>
             </button>
           </li>
         ))}

@@ -8,7 +8,7 @@ export default function TypingIndicator() {
       <Logo size={30} className="mt-0.5 hidden rounded-lg shadow-e2 sm:block" />
 
       <div
-        className="surface-card flex h-11 items-center gap-2.5 rounded-3xl rounded-tl-lg px-4 shadow-e1"
+        className="flex h-8 items-center gap-2.5"
         aria-hidden
       >
         <span className="flex items-center gap-1">

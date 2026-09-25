@@ -36,7 +36,7 @@ function HistorySkeleton() {
           </div>
           <div className="flex gap-3">
             <Skeleton className="h-7.5 w-7.5 shrink-0 rounded-lg" />
-            <div className="surface-card flex w-full flex-col gap-2.5 rounded-3xl rounded-tl-lg p-5">
+            <div className="flex w-full flex-col gap-2.5 pt-1.5">
               <Skeleton className="h-3.5 w-full rounded-full" />
               <Skeleton className="h-3.5 w-[92%] rounded-full" />
               <Skeleton className="h-3.5 w-[60%] rounded-full" />

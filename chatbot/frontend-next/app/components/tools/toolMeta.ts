@@ -7,6 +7,7 @@ import {
   LocateFixed,
   MapPin,
   TrendingUp,
+  Wallet,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
@@ -116,11 +117,13 @@ export function toolMeta(name: string): ToolMeta {
   const known = KNOWN[name];
   if (known) return known;
   const label = humanize(name);
+  // The spending-analyzer MCP server's add/edit/delete_expense, expense_summary.
+  const isExpense = /expense|spend/i.test(name);
   return {
     label,
     running: `Running ${label.toLowerCase()}`,
-    icon: Wrench,
-    tone: "indigo",
+    icon: isExpense ? Wallet : Wrench,
+    tone: isExpense ? "emerald" : "indigo",
     subject: (t) => {
       for (const value of Object.values(t.args)) {
         const s = str(value);

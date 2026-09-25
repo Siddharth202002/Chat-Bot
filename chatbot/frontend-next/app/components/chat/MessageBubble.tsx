@@ -4,11 +4,18 @@ import { closeDanglingMarkup } from "@/app/lib/streamingMarkdown";
 import type { ToolActivity } from "@/app/lib/tools";
 import { cn } from "@/app/lib/utils";
 import { Check, Copy, Pencil, RotateCcw } from "lucide-react";
-import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  isValidElement,
+  memo,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactElement,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import ToolActivityList from "../tools/ToolCard";
 import Button from "../ui/Button";
 import Logo from "../ui/Logo";
@@ -257,56 +264,59 @@ const markdownComponents = {
       </div>
     );
   },
-  code({ className, children, ...props }: { className?: string; children?: React.ReactNode }) {
-    const match = /language-(\w+)/.exec(className || "");
-    const codeString = String(children).replace(/\n$/, "");
-
-    if (!match) {
-      return <code {...props}>{children}</code>;
-    }
-
-    return (
-      <div className="my-4 overflow-hidden rounded-2xl bg-[var(--code-bg)] shadow-e2">
-        <div className="flex items-center justify-between bg-[var(--code-header)] py-1 pl-4 pr-1.5">
-          <span className="text-micro font-medium tracking-wide text-white/60">
-            {labelFor(match[1])}
-          </span>
-          <CopyButton
-            text={codeString}
-            label="Copy code"
-            className="text-white/55 hover:bg-white/10 hover:text-white"
-          />
-        </div>
-        <div className="overflow-x-auto">
-          <SyntaxHighlighter
-            style={vscDarkPlus}
-            language={match[1]}
-            PreTag="pre"
-            customStyle={{
-              margin: 0,
-              borderRadius: 0,
-              fontSize: "13px",
-              lineHeight: 1.65,
-              padding: "14px 16px",
-              background: "transparent",
-            }}
-            // vscDarkPlus paints its own slab on the <code> element, which shows
-            // through as a lighter box inside our container — flatten it.
-            codeTagProps={{
-              style: {
-                background: "transparent",
-                textShadow: "none",
-                fontFamily: "var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)",
-              },
-            }}
-          >
-            {codeString}
-          </SyntaxHighlighter>
-        </div>
-      </div>
-    );
+  // Every fenced block is rendered here, at the <pre>, so a block with no
+  // language (typically program output) gets the same card as real code.
+  // Inline `code` never reaches this path: it has no <pre> around it.
+  pre({ children }: { children?: React.ReactNode }) {
+    const child = isValidElement(children)
+      ? (children as ReactElement<{ className?: string; children?: React.ReactNode }>)
+      : null;
+    const lang = /language-(\w+)/.exec(child?.props.className || "")?.[1] ?? null;
+    const codeString = String(child?.props.children ?? "").replace(/\n$/, "");
+    return <CodeBlock language={lang} code={codeString} />;
   },
 };
+
+// Languages that are really "what the program printed".
+const OUTPUT_LANGS = new Set(["text", "txt", "plaintext", "output", "console", "log"]);
+
+/**
+ * A code or output block: the one place an answer gets a white card. Token
+ * colours come from CSS (see `.code-block` in globals.css) rather than an
+ * inline Prism theme, so they follow the light/dark switch.
+ */
+function CodeBlock({ language, code }: { language: string | null; code: string }) {
+  const isOutput = !language || OUTPUT_LANGS.has(language.toLowerCase());
+  return (
+    <div className="code-block my-4 overflow-hidden rounded-2xl border border-line-subtle bg-raised shadow-e1">
+      <div className="flex items-center justify-between border-b border-line-subtle bg-hover py-1 pl-4 pr-1.5">
+        <span className="text-micro font-semibold tracking-wide text-fg-subtle">
+          {isOutput ? "Output" : labelFor(language!)}
+        </span>
+        <CopyButton text={code} label={isOutput ? "Copy output" : "Copy code"} />
+      </div>
+      <div className="overflow-x-auto">
+        {isOutput ? (
+          <pre className="code-pre">
+            <code>{code}</code>
+          </pre>
+        ) : (
+          <SyntaxHighlighter
+            language={language!}
+            PreTag="pre"
+            // An empty theme: the library otherwise falls back to its default
+            // one and still inlines black text on the <code> element.
+            style={{}}
+            useInlineStyles={false}
+            className="code-pre"
+          >
+            {code}
+          </SyntaxHighlighter>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /* ── Message ────────────────────────────────────────────────────── */
 
@@ -383,10 +393,16 @@ function MessageBubbleInner({
       <Logo size={30} className="mt-0.5 hidden rounded-lg shadow-e2 sm:block" />
 
       <div className="flex min-w-0 flex-1 flex-col gap-2.5">
-        {tools.length > 0 && <ToolActivityList tools={tools} />}
+        {/* Tool cards are progress, not content: they show while the turn is
+            working and give way to the answer once its text arrives. A reset
+            (the model going back for another tool) empties the text, so they
+            come back for that round. */}
+        {tools.length > 0 && !contentStr && <ToolActivityList tools={tools} />}
 
+        {/* Answer text sits directly on the page; only code and output
+            blocks inside it get a card (see CodeBlock). */}
         {contentStr && (
-          <div className="surface-card rounded-3xl rounded-tl-lg px-4.5 py-3.5 shadow-e1 sm:px-5 sm:py-4">
+          <div className="pt-1">
             <div className={cn("md message-body", isStreaming && "streaming-cursor")}>
               <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={markdownComponents}>
                 {/* Mid-stream the buffer is usually cut mid-token, so the
