@@ -120,7 +120,14 @@ export default function ChatArea({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className={cn("flex flex-1 flex-col", isEmpty ? "overflow-hidden" : "min-h-0 overflow-y-auto")}
+        className={cn(
+          "flex flex-1 flex-col",
+          isEmpty
+            ? "overflow-hidden"
+            : // Apple-style scroll edge: messages fade into the top bar
+              // instead of being cut off under it.
+              "scroll-edge-fade min-h-0 overflow-y-auto"
+        )}
       >
         {isEmpty ? (
           /* ══ Welcome hero ══ */

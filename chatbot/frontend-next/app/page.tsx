@@ -7,6 +7,7 @@ import LocationStatus from "./components/chat/LocationStatus";
 import { type Message } from "./components/chat/MessageBubble";
 import { type ModelOption } from "./components/chat/ModelPicker";
 import SuggestionGrid from "./components/chat/SuggestionGrid";
+import AnimatedWaveBackground from "./components/layout/AnimatedWaveBackground";
 import Header from "./components/layout/Header";
 import Sidebar, { type ChatSummary, type RagState } from "./components/layout/Sidebar";
 import Button from "./components/ui/Button";
@@ -1201,6 +1202,9 @@ export default function Home() {
 
   return (
     <div className="app-backdrop flex h-dvh w-full">
+      {/* Decorative only: fixed behind everything, never takes pointer input. */}
+      <AnimatedWaveBackground />
+
       <input
         ref={pdfInputRef}
         type="file"
@@ -1209,11 +1213,10 @@ export default function Home() {
         onChange={handlePdfInputChange}
       />
 
-      {/* The app fills the whole viewport: a light tint over the drifting
-          backdrop. No backdrop-filter here -- blurring a full-screen layer over
-          a moving gradient would re-run the blur every frame for no visible
-          gain. */}
-      <div className="relative flex h-full w-full overflow-hidden bg-[var(--glass-frame)]">
+      {/* The app fills the whole viewport with no tint of its own: the glass
+          surfaces (sidebar, composer, controls) need the colourful backdrop
+          behind them to show through. */}
+      <div className="relative flex h-full w-full overflow-hidden">
         <Sidebar
           chatHistory={chatHistory}
           threadId={threadId}

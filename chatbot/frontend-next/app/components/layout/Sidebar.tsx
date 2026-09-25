@@ -381,7 +381,9 @@ export default function Sidebar({
           isOpen ? "translate-x-0" : "invisible -translate-x-[110%]",
           // From `md` up it lives in the flow and animates its width instead.
           "md:visible md:relative md:inset-auto md:z-auto md:h-full md:shrink-0 md:translate-x-0",
-          "md:rounded-none md:border-0 md:border-r md:border-line-subtle md:bg-[var(--sidebar-bg)] md:shadow-none md:backdrop-blur-none",
+          // Desktop: the same liquid glass, docked full height with a single
+          // hairline on its right edge. `!` because glass-strong sets a full border.
+          "md:rounded-none md:border-0! md:border-r! md:shadow-none",
           "md:transition-[width] md:duration-200 md:ease-standard",
           isOpen ? "md:w-71" : "md:w-17"
         )}

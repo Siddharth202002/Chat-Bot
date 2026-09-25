@@ -112,14 +112,41 @@
     radial-gradient(55% 45% at 8% 0%, rgb(178 198 252 / 0.95) 0%, transparent 70%),
     linear-gradient(180deg, #cfdbfa 0%, #dcd3f8 100%);
 
+  /* ── Liquid glass (Apple macOS Tahoe / iOS 26 style) ──
+     Each material is a translucent tint (top → bottom), a bright rim of
+     light along its top edge, a faint diagonal sheen, a hairline border and
+     a heavy blur with boosted saturation so what is behind glows through. */
   --glass-frame: rgb(255 255 255 / 0.3);
-  --glass-panel: rgb(255 255 255 / 0.66);
-  --glass-strong: rgb(255 255 255 / 0.8);
-  --glass-border: rgb(255 255 255 / 0.78);
+  --glass-panel: rgb(255 255 255 / 0.5);
+  --glass-panel-b: rgb(255 255 255 / 0.3);
+  --glass-strong: rgb(255 255 255 / 0.66);
+  --glass-strong-b: rgb(255 255 255 / 0.46);
+  --glass-border: rgb(255 255 255 / 0.6);
+  --glass-border-top: rgb(255 255 255 / 0.95);
+  --glass-rim: rgb(255 255 255 / 0.95);
+  --glass-sheen: rgb(255 255 255 / 0.35);
   --glass-edge: rgb(255 255 255 / 0.55);
-  --glass-blur: 24px;
-  --surface-card: rgb(255 255 255 / 0.74);
+  --glass-blur: 28px;
+  --glass-saturate: 1.8;
+  --surface-card: rgb(255 255 255 / 0.62);
+  --surface-card-b: rgb(255 255 255 / 0.44);
   --sidebar-bg: rgb(255 255 255 / 0.62);
+
+  /* ── Animated wave background (components/layout/AnimatedWaveBackground)
+     Colours come from the brand palette: the accent for the main wave, then
+     the brand gradient's blue and violet, then the backdrop's soft pink.
+     Opacity is per wave; speed scales every wave at once (2 = twice as fast). */
+  --wave-1: #6a6cf4;
+  --wave-2: #6f8dff;
+  --wave-3: #9a6cf2;
+  --wave-4: rgb(236 176 234);
+  --wave-opacity-1: 0.22;
+  --wave-opacity-2: 0.18;
+  --wave-opacity-3: 0.15;
+  --wave-opacity-4: 0.2;
+  --wave-top-opacity: 0.55;
+  --wave-crest: rgb(255 255 255 / 0.85);
+  --wave-speed: 1;
 
   --skeleton-sheen: rgb(255 255 255 / 0.65);
   /* Syntax colours for code blocks (light) */
@@ -188,12 +215,30 @@
     linear-gradient(180deg, #0b0c1a 0%, #111128 100%);
 
   --glass-frame: rgb(20 21 40 / 0.55);
-  --glass-panel: rgb(26 27 50 / 0.62);
-  --glass-strong: rgb(30 31 56 / 0.86);
-  --glass-border: rgb(255 255 255 / 0.08);
+  --glass-panel: rgb(44 46 82 / 0.5);
+  --glass-panel-b: rgb(24 25 48 / 0.38);
+  --glass-strong: rgb(46 48 86 / 0.66);
+  --glass-strong-b: rgb(26 27 52 / 0.56);
+  --glass-border: rgb(255 255 255 / 0.1);
+  --glass-border-top: rgb(255 255 255 / 0.2);
+  --glass-rim: rgb(255 255 255 / 0.22);
+  --glass-sheen: rgb(255 255 255 / 0.06);
   --glass-edge: rgb(255 255 255 / 0.05);
-  --surface-card: rgb(28 29 52 / 0.78);
+  --glass-saturate: 1.6;
+  --surface-card: rgb(44 46 82 / 0.55);
+  --surface-card-b: rgb(28 29 54 / 0.45);
   --sidebar-bg: rgb(16 17 34 / 0.45);
+
+  --wave-1: #6a72f6;
+  --wave-2: #4f7ae0;
+  --wave-3: #8a5ce8;
+  --wave-4: #9c4f9a;
+  --wave-opacity-1: 0.26;
+  --wave-opacity-2: 0.18;
+  --wave-opacity-3: 0.16;
+  --wave-opacity-4: 0.14;
+  --wave-top-opacity: 0.5;
+  --wave-crest: rgb(200 205 255 / 0.55);
 
   --skeleton-sheen: rgb(255 255 255 / 0.06);
   --inline-code-bg: rgb(255 255 255 / 0.1);
@@ -231,32 +276,59 @@
 
 /* Glass is reserved for the frame, panels, the composer and floating
    surfaces — not every element. */
+/* Liquid glass. The rim and sheen are background layers (not box-shadows)
+   so they never fight the shadow-* utilities these surfaces also carry, and
+   need no positioning of their own. Glass is reserved for the chrome — the
+   sidebar, composer, header controls, menus and dialogs — not every element.
+   Write only the unprefixed `backdrop-filter`: the CSS compiler adds the
+   -webkit- copy itself, and given both it keeps only the prefixed one, which
+   Chrome ignores. */
 @utility glass-frame {
-  background: var(--glass-frame);
+  background:
+    linear-gradient(180deg, var(--glass-rim) 0, transparent 1.5px),
+    linear-gradient(135deg, var(--glass-sheen) 0%, transparent 40%),
+    linear-gradient(180deg, var(--glass-panel), var(--glass-panel-b));
   border: 1px solid var(--glass-border);
-  backdrop-filter: blur(var(--glass-blur)) saturate(1.35);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.35);
+  border-top-color: var(--glass-border-top);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
 
 @utility glass-panel {
-  background: var(--glass-panel);
+  background:
+    linear-gradient(180deg, var(--glass-rim) 0, transparent 1.5px),
+    linear-gradient(135deg, var(--glass-sheen) 0%, transparent 45%),
+    linear-gradient(180deg, var(--glass-panel), var(--glass-panel-b));
   border: 1px solid var(--glass-border);
-  backdrop-filter: blur(18px) saturate(1.3);
-  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  border-top-color: var(--glass-border-top);
+  backdrop-filter: blur(22px) saturate(var(--glass-saturate));
 }
 
 @utility glass-strong {
-  background: var(--glass-strong);
+  background:
+    linear-gradient(180deg, var(--glass-rim) 0, transparent 1.5px),
+    linear-gradient(135deg, var(--glass-sheen) 0%, transparent 40%),
+    linear-gradient(180deg, var(--glass-strong), var(--glass-strong-b));
   border: 1px solid var(--glass-border);
-  backdrop-filter: blur(18px) saturate(1.3);
-  -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  border-top-color: var(--glass-border-top);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
 
-/* Translucent card without a blur — for repeated items (messages, tool
-   rows) where a backdrop-filter per element would cost scroll performance. */
+/* The same glass look without the blur — for repeated items (suggestion
+   chips, tool cards, the account card) where a backdrop-filter per element
+   would cost scroll and animation performance. */
 @utility surface-card {
-  background: var(--surface-card);
+  background:
+    linear-gradient(180deg, var(--glass-rim) 0, transparent 1.5px),
+    linear-gradient(135deg, var(--glass-sheen) 0%, transparent 45%),
+    linear-gradient(180deg, var(--surface-card), var(--surface-card-b));
   border: 1px solid var(--glass-border);
+  border-top-color: var(--glass-border-top);
+}
+
+/* Content scrolling under the top bar fades out over 28px rather than
+   being clipped at a hard line. */
+@utility scroll-edge-fade {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -543,6 +615,141 @@ button:disabled {
     radial-gradient(1px 1px at 46% 46%, rgb(255 255 255 / 0.7), transparent 60%);
 }
 
+
+/* ═══════════════════════════════════════════════════════════════
+   ANIMATED WAVE BACKGROUND  (components/layout/AnimatedWaveBackground)
+   Sits inside .app-backdrop at z-index -1: above the drifting gradient,
+   below every piece of UI. pointer-events: none so it never takes a click,
+   scroll or text selection.
+   ═══════════════════════════════════════════════════════════════ */
+.wave-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  /* Keep the reading area clean: the waves fade out towards the centre, so
+     the motion lives along the bottom and the sides. */
+  -webkit-mask-image: radial-gradient(ellipse 62% 58% at 50% 40%, transparent 30%, #000 88%);
+  mask-image: radial-gradient(ellipse 62% 58% at 50% 40%, transparent 30%, #000 88%);
+}
+
+.wave-edge {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.wave-edge-bottom {
+  bottom: 0;
+  height: clamp(180px, 40vh, 440px);
+}
+
+.wave-edge-top {
+  top: 0;
+  height: clamp(120px, 24vh, 260px);
+  transform: scaleY(-1);
+  opacity: var(--wave-top-opacity);
+}
+
+/* Twice the viewport wide; the path repeats every half, so sliding by -50%
+   is a seamless loop. */
+.wave-layer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 200%;
+  animation: wave-slide calc(var(--wave-duration, 20) * 1s / var(--wave-speed)) linear infinite;
+  will-change: transform;
+}
+
+/* A slow rise-and-fall on top of the slide is what makes it read as a
+   living, morphing surface rather than a conveyor belt. */
+.wave-swell {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+  animation: wave-swell calc(var(--swell-duration, 9) * 1s / var(--wave-speed)) ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.wave-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.wave-crest {
+  stroke: var(--wave-crest);
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+}
+
+.wave-1 {
+  --wave-duration: 24;
+  --swell-duration: 10;
+  opacity: var(--wave-opacity-1);
+}
+
+.wave-2 {
+  --wave-duration: 19;
+  --swell-duration: 8;
+  opacity: var(--wave-opacity-2);
+  animation-direction: reverse;
+}
+
+.wave-3 {
+  --wave-duration: 22;
+  --swell-duration: 12;
+  opacity: var(--wave-opacity-3);
+}
+
+.wave-4 {
+  --wave-duration: 16;
+  --swell-duration: 7;
+  opacity: var(--wave-opacity-4);
+  animation-direction: reverse;
+}
+
+/* Offset the swells so no two waves breathe in step. */
+.wave-2 .wave-swell {
+  animation-delay: -3s;
+}
+
+.wave-3 .wave-swell {
+  animation-delay: -6s;
+}
+
+.wave-4 .wave-swell {
+  animation-delay: -2s;
+}
+
+@keyframes wave-slide {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@keyframes wave-swell {
+  from {
+    transform: translate3d(0, 5%, 0) scaleY(0.92);
+  }
+
+  to {
+    transform: translate3d(0, 0, 0) scaleY(1.06);
+  }
+}
+
+/* Reduced motion: the same waves, held still. */
+@media (prefers-reduced-motion: reduce) {
+  .wave-layer,
+  .wave-swell {
+    animation: none !important;
+  }
+}
 
 /* Running tool label: a soft moving highlight across the text. */
 .shimmer-text {
