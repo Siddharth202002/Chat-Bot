@@ -8,19 +8,19 @@ type Size = "sm" | "md";
 
 const VARIANTS: Record<Variant, string> = {
   primary:
-    "bg-accent text-white shadow-e1 hover:bg-accent-hi active:bg-accent disabled:bg-accent/35 disabled:text-white/50",
+    "bg-brand text-white shadow-glow hover:brightness-[1.06] hover:shadow-e3 active:brightness-95 disabled:opacity-45 disabled:shadow-none",
   secondary:
-    "bg-raised text-fg border border-line hover:bg-hover hover:border-line-strong active:bg-active disabled:text-fg-faint disabled:border-line-subtle disabled:bg-transparent",
+    "bg-raised/80 text-fg border border-line shadow-e1 hover:bg-raised hover:border-line-strong active:bg-active disabled:text-fg-faint disabled:border-line-subtle disabled:bg-transparent disabled:shadow-none",
   ghost:
     "bg-transparent text-fg-muted hover:bg-hover hover:text-fg active:bg-active disabled:text-fg-faint disabled:hover:bg-transparent",
   accentGhost:
-    "bg-accent-subtle text-accent-fg border border-accent-muted/60 hover:bg-accent-muted/30 hover:border-accent-muted active:bg-accent-muted/40 disabled:text-fg-faint",
+    "bg-accent-subtle text-accent-fg border border-accent-muted/60 hover:bg-accent-muted/40 hover:border-accent-muted active:bg-accent-muted/50 disabled:text-fg-faint",
   danger:
-    "bg-danger/90 text-[#1a0d0d] font-semibold hover:bg-danger active:bg-danger/90 disabled:bg-danger/30",
+    "bg-danger text-white font-semibold shadow-e1 hover:brightness-110 active:brightness-95 disabled:opacity-40",
 };
 
 const SIZES: Record<Size, string> = {
-  sm: "h-8 px-3 text-small gap-1.5",
+  sm: "h-8 px-3.5 text-small gap-1.5",
   md: "h-10 px-4 text-small gap-2",
 };
 
@@ -44,8 +44,8 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
       ref={ref}
       type={type}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-md font-medium",
-        "transition-colors duration-150 ease-standard",
+        "inline-flex shrink-0 items-center justify-center rounded-full font-medium",
+        "transition-[background-color,border-color,color,box-shadow,filter,transform] duration-150 ease-standard",
         "active:scale-[0.985] disabled:pointer-events-none",
         SIZES[size],
         VARIANTS[variant],
@@ -82,8 +82,8 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(
         aria-label={label}
         title={tooltip ? label : undefined}
         className={cn(
-          "inline-flex shrink-0 items-center justify-center rounded-md",
-          "transition-colors duration-150 ease-standard",
+          "inline-flex shrink-0 items-center justify-center rounded-full",
+          "transition-[background-color,color,box-shadow,transform] duration-150 ease-standard",
           "active:scale-95 disabled:pointer-events-none",
           size === "sm" ? "h-8 w-8" : "h-9 w-9",
           VARIANTS[variant],

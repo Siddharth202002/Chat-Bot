@@ -1,65 +1,73 @@
 @import "tailwindcss";
 
+/* `dark:` follows the in-app theme switch, not the OS setting. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* ═══════════════════════════════════════════════════════════════
    DESIGN TOKENS  —  Tailwind v4 CSS-first theme
-   Dark-first. Every token is semantic; no raw palette in components.
+   Light pastel by default; `html[data-theme="dark"]` swaps every
+   token below (see DARK THEME). Components only ever use these
+   semantic names, never raw palette values.
    ═══════════════════════════════════════════════════════════════ */
 @theme {
   /* ── Surfaces ── */
-  --color-canvas: #0b0b12;
-  --color-raised: #15141f;
-  --color-overlay: #1b1a28;
-  --color-hover: #221f31;
-  --color-active: #28243a;
+  --color-canvas: #eef1fb;
+  --color-raised: #ffffff;
+  --color-overlay: #ffffff;
+  --color-hover: rgb(91 99 240 / 0.07);
+  --color-active: rgb(91 99 240 / 0.12);
 
   /* ── Borders ── */
-  --color-line-subtle: #211f2c;
-  --color-line: #2c2938;
-  --color-line-strong: #3a3550;
-  --color-focus: #7c5ce0;
+  --color-line-subtle: rgb(112 122 190 / 0.13);
+  --color-line: rgb(112 122 190 / 0.22);
+  --color-line-strong: rgb(112 122 190 / 0.34);
+  --color-focus: #7b83f6;
 
   /* ── Foreground ──
-     Contrast vs canvas: fg 17.8:1 · fg-muted 9.6:1 · fg-subtle 5.6:1 (all AA+).
-     fg-faint (2.8:1) is for disabled affordances only, never readable copy. */
-  --color-fg: #f5f3f7;
-  --color-fg-muted: #b8b3c4;
-  --color-fg-subtle: #8b8698;
-  --color-fg-faint: #5c5768;
+     Contrast vs white: fg 15.9:1 · fg-muted 8.2:1 · fg-subtle 4.9:1 (all AA).
+     fg-faint is for disabled affordances and decoration only. */
+  --color-fg: #1b1d36;
+  --color-fg-muted: #464a6b;
+  --color-fg-subtle: #676b8f;
+  --color-fg-faint: #a5a8c4;
 
-  /* ── Accent ── */
-  --color-accent-subtle: #241c3e;
-  --color-accent-muted: #4b3e8f;
-  --color-accent: #6d4fd1;
-  --color-accent-hi: #7c5ce0;
-  --color-accent-fg: #a78bfa;
+  /* ── Accent (periwinkle → violet) ── */
+  --color-accent-subtle: #eceefe;
+  --color-accent-muted: #c9cdfb;
+  --color-accent: #5b63f0;
+  --color-accent-hi: #4b52e2;
+  --color-accent-fg: #4a51dc;
 
   /* ── Semantic ── */
-  --color-success: #34d399;
-  --color-success-subtle: #0f2a21;
-  --color-warning: #fbbf24;
-  --color-warning-subtle: #2e2410;
-  --color-danger: #f87171;
-  --color-danger-subtle: #2e1616;
-  --color-info: #60a5fa;
-  --color-info-subtle: #142235;
+  --color-success: #15935a;
+  --color-success-subtle: #e6f6ee;
+  --color-warning: #c06a05;
+  --color-warning-subtle: #fdf2e1;
+  --color-danger: #d93f4c;
+  --color-danger-subtle: #fdebed;
+  --color-info: #2a74d6;
+  --color-info-subtle: #e7f0fd;
 
-  /* ── Radii ── */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.625rem;
-  --radius-lg: 0.875rem;
+  /* ── Radii (soft, generous) ── */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
   --radius-xl: 1.25rem;
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 1.75rem;
 
-  /* ── Elevation (dark UIs lean on borders and depth, not heavy drop shadows) ── */
-  --shadow-e1: 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow-e2: 0 4px 12px rgb(0 0 0 / 0.45);
-  --shadow-e3: 0 12px 32px rgb(0 0 0 / 0.55);
-  --shadow-focus: 0 0 0 1px var(--color-focus), 0 0 24px rgb(109 79 209 / 0.22);
+  /* ── Elevation: tinted, low-opacity shadows ── */
+  --shadow-e1: 0 1px 2px rgb(40 48 120 / 0.06), 0 1px 1px rgb(40 48 120 / 0.03);
+  --shadow-e2: 0 8px 24px -8px rgb(60 70 170 / 0.18), 0 2px 6px -2px rgb(60 70 170 / 0.08);
+  --shadow-e3: 0 28px 64px -20px rgb(60 70 170 / 0.3), 0 8px 20px -8px rgb(60 70 170 / 0.12);
+  --shadow-focus: 0 0 0 1px var(--color-focus), 0 0 0 5px rgb(123 131 246 / 0.16);
+  --shadow-glow: 0 10px 28px -8px rgb(91 99 240 / 0.45);
 
-  /* ── Type scale (7 steps) ── */
-  --text-display: 2.625rem;
-  --text-display--line-height: 1.08;
+  /* ── Type scale ── */
+  --text-display: 2.375rem;
+  --text-display--line-height: 1.12;
   --text-display--letter-spacing: -0.03em;
-  --text-display--font-weight: 700;
+  --text-display--font-weight: 600;
 
   --text-h1: 1.5rem;
   --text-h1--line-height: 1.25;
@@ -74,23 +82,253 @@
   --text-body-lg: 0.9375rem;
   --text-body-lg--line-height: 1.6;
 
-  --text-body: 0.875rem;
-  --text-body--line-height: 1.65;
+  --text-body: 0.9063rem;
+  --text-body--line-height: 1.7;
 
   --text-small: 0.8125rem;
-  --text-small--line-height: 1.4;
+  --text-small--line-height: 1.45;
 
   --text-micro: 0.6875rem;
   --text-micro--line-height: 1.35;
-  --text-micro--letter-spacing: 0.02em;
+  --text-micro--letter-spacing: 0.01em;
 
   /* ── Motion ── */
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* ── Layout ── */
-  --sidebar-rail: 56px;
-  --sidebar-width: 272px;
+  --sidebar-rail: 68px;
+  --sidebar-width: 284px;
+}
+
+/* ── Non-colour tokens: gradients and glass ─────────────────────── */
+:root {
+  --gradient-brand: linear-gradient(135deg, #6f8dff 0%, #6a6cf4 48%, #9a6cf2 100%);
+  --gradient-brand-soft: linear-gradient(135deg, #e3e9ff 0%, #ebe4fd 100%);
+  --gradient-page:
+    radial-gradient(55% 60% at 100% 0%, rgb(140 205 250 / 0.95) 0%, transparent 62%),
+    radial-gradient(60% 65% at 0% 100%, rgb(176 150 245 / 0.9) 0%, transparent 64%),
+    radial-gradient(45% 50% at 92% 100%, rgb(236 176 234 / 0.85) 0%, transparent 62%),
+    radial-gradient(55% 45% at 8% 0%, rgb(178 198 252 / 0.95) 0%, transparent 70%),
+    linear-gradient(180deg, #cfdbfa 0%, #dcd3f8 100%);
+
+  /* ── Liquid glass (Apple macOS Tahoe / iOS 26 style) ──
+     Each material is a translucent tint (top → bottom), a bright rim of
+     light along its top edge, a faint diagonal sheen, a hairline border and
+     a heavy blur with boosted saturation so what is behind glows through. */
+  --glass-frame: rgb(255 255 255 / 0.3);
+  --glass-panel: rgb(255 255 255 / 0.5);
+  --glass-panel-b: rgb(255 255 255 / 0.3);
+  --glass-strong: rgb(255 255 255 / 0.66);
+  --glass-strong-b: rgb(255 255 255 / 0.46);
+  --glass-border: rgb(255 255 255 / 0.6);
+  --glass-border-top: rgb(255 255 255 / 0.95);
+  --glass-rim: rgb(255 255 255 / 0.95);
+  --glass-sheen: rgb(255 255 255 / 0.35);
+  --glass-edge: rgb(255 255 255 / 0.55);
+  --glass-blur: 28px;
+  --glass-saturate: 1.8;
+  --surface-card: rgb(255 255 255 / 0.62);
+  --surface-card-b: rgb(255 255 255 / 0.44);
+  --sidebar-bg: rgb(255 255 255 / 0.62);
+
+  /* ── Animated wave background (components/layout/AnimatedWaveBackground)
+     Colours come from the brand palette: the accent for the main wave, then
+     the brand gradient's blue and violet, then the backdrop's soft pink.
+     Opacity is per wave; speed scales every wave at once (2 = twice as fast). */
+  --wave-1: #6a6cf4;
+  --wave-2: #6f8dff;
+  --wave-3: #9a6cf2;
+  --wave-4: rgb(236 176 234);
+  --wave-opacity-1: 0.22;
+  --wave-opacity-2: 0.18;
+  --wave-opacity-3: 0.15;
+  --wave-opacity-4: 0.2;
+  --wave-top-opacity: 0.55;
+  --wave-crest: rgb(255 255 255 / 0.85);
+  --wave-speed: 1;
+
+  --skeleton-sheen: rgb(255 255 255 / 0.65);
+  /* Syntax colours for code blocks (light) */
+  --inline-code-bg: rgb(27 29 54 / 0.07);
+  --syn-fg: #24273f;
+  --syn-comment: #7a7f9e;
+  --syn-keyword: #7c3aed;
+  --syn-string: #0a7f55;
+  --syn-function: #2358d8;
+  --syn-number: #c2410c;
+  --syn-class: #a15c07;
+  --syn-builtin: #0e7490;
+  --syn-decorator: #c0267a;
+  --syn-punct: #5f6485;
+  --user-bubble-fg: #ffffff;
+
+  color-scheme: light;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DARK THEME — same token names, deep indigo night palette
+   ═══════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"] {
+  --color-canvas: #0d0e1c;
+  --color-raised: #17182c;
+  --color-overlay: #1c1d34;
+  --color-hover: rgb(160 168 255 / 0.08);
+  --color-active: rgb(160 168 255 / 0.14);
+
+  --color-line-subtle: rgb(160 168 255 / 0.09);
+  --color-line: rgb(160 168 255 / 0.15);
+  --color-line-strong: rgb(160 168 255 / 0.26);
+  --color-focus: #8b92ff;
+
+  --color-fg: #f1f2fb;
+  --color-fg-muted: #bcc0dc;
+  --color-fg-subtle: #8f93b4;
+  --color-fg-faint: #5d6184;
+
+  --color-accent-subtle: rgb(110 118 255 / 0.14);
+  --color-accent-muted: rgb(128 136 255 / 0.4);
+  --color-accent: #6a72f6;
+  --color-accent-hi: #7c83ff;
+  --color-accent-fg: #a7adff;
+
+  --color-success: #45d392;
+  --color-success-subtle: rgb(69 211 146 / 0.12);
+  --color-warning: #f4b740;
+  --color-warning-subtle: rgb(244 183 64 / 0.12);
+  --color-danger: #ff7a85;
+  --color-danger-subtle: rgb(255 122 133 / 0.12);
+  --color-info: #6fb0ff;
+  --color-info-subtle: rgb(111 176 255 / 0.12);
+
+  --shadow-e1: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow-e2: 0 10px 28px -10px rgb(0 0 0 / 0.55);
+  --shadow-e3: 0 28px 64px -18px rgb(0 0 0 / 0.65);
+  --shadow-focus: 0 0 0 1px var(--color-focus), 0 0 0 5px rgb(139 146 255 / 0.18);
+  --shadow-glow: 0 10px 28px -8px rgb(106 114 246 / 0.55);
+
+  --gradient-brand-soft: linear-gradient(135deg, rgb(111 141 255 / 0.18) 0%, rgb(154 108 242 / 0.18) 100%);
+  --gradient-page:
+    radial-gradient(60% 55% at 100% 0%, rgb(56 92 170 / 0.45) 0%, transparent 60%),
+    radial-gradient(55% 60% at 0% 100%, rgb(96 64 170 / 0.45) 0%, transparent 62%),
+    radial-gradient(45% 45% at 88% 100%, rgb(150 70 150 / 0.3) 0%, transparent 60%),
+    linear-gradient(180deg, #0b0c1a 0%, #111128 100%);
+
+  --glass-frame: rgb(20 21 40 / 0.55);
+  --glass-panel: rgb(44 46 82 / 0.5);
+  --glass-panel-b: rgb(24 25 48 / 0.38);
+  --glass-strong: rgb(46 48 86 / 0.66);
+  --glass-strong-b: rgb(26 27 52 / 0.56);
+  --glass-border: rgb(255 255 255 / 0.1);
+  --glass-border-top: rgb(255 255 255 / 0.2);
+  --glass-rim: rgb(255 255 255 / 0.22);
+  --glass-sheen: rgb(255 255 255 / 0.06);
+  --glass-edge: rgb(255 255 255 / 0.05);
+  --glass-saturate: 1.6;
+  --surface-card: rgb(44 46 82 / 0.55);
+  --surface-card-b: rgb(28 29 54 / 0.45);
+  --sidebar-bg: rgb(16 17 34 / 0.45);
+
+  --wave-1: #6a72f6;
+  --wave-2: #4f7ae0;
+  --wave-3: #8a5ce8;
+  --wave-4: #9c4f9a;
+  --wave-opacity-1: 0.26;
+  --wave-opacity-2: 0.18;
+  --wave-opacity-3: 0.16;
+  --wave-opacity-4: 0.14;
+  --wave-top-opacity: 0.5;
+  --wave-crest: rgb(200 205 255 / 0.55);
+
+  --skeleton-sheen: rgb(255 255 255 / 0.06);
+  --inline-code-bg: rgb(255 255 255 / 0.1);
+  --syn-fg: #e4e6f5;
+  --syn-comment: #7d82a8;
+  --syn-keyword: #c4a7ff;
+  --syn-string: #7ee2b8;
+  --syn-function: #8ab4ff;
+  --syn-number: #fdba74;
+  --syn-class: #fcd34d;
+  --syn-builtin: #67e8f9;
+  --syn-decorator: #f9a8d4;
+  --syn-punct: #a3a8c9;
+
+  color-scheme: dark;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UTILITIES built on the tokens above
+   ═══════════════════════════════════════════════════════════════ */
+@utility bg-brand {
+  background-image: var(--gradient-brand);
+}
+
+@utility bg-brand-soft {
+  background-image: var(--gradient-brand-soft);
+}
+
+@utility text-brand {
+  background-image: var(--gradient-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Glass is reserved for the frame, panels, the composer and floating
+   surfaces — not every element. */
+/* Liquid glass. The rim and sheen are background layers (not box-shadows)
+   so they never fight the shadow-* utilities these surfaces also carry, and
+   need no positioning of their own. Glass is reserved for the chrome — the
+   sidebar, composer, header controls, menus and dialogs — not every element.
+   Write only the unprefixed `backdrop-filter`: the CSS compiler adds the
+   -webkit- copy itself, and given both it keeps only the prefixed one, which
+   Chrome ignores. */
+@utility glass-frame {
+  background:
+    linear-gradient(180deg, var(--glass-rim) 0, transparent 1.5px),
+    linear-gradient(135deg, var(--glass-sheen) 0%, transparent 40%),
+    linear-gradient(180deg, var(--glass-panel), var(--glass-panel-b));
+  border: 1px solid var(--glass-border);
+  border-top-color: var(--glass-border-top);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+@utility glass-panel {
+  background:
+    linear-gradient(180deg, var(--glass-rim) 0, transparent 1.5px),
+    linear-gradient(135deg, var(--glass-sheen) 0%, transparent 45%),
+    linear-gradient(180deg, var(--glass-panel), var(--glass-panel-b));
+  border: 1px solid var(--glass-border);
+  border-top-color: var(--glass-border-top);
+  backdrop-filter: blur(22px) saturate(var(--glass-saturate));
+}
+
+@utility glass-strong {
+  background:
+    linear-gradient(180deg, var(--glass-rim) 0, transparent 1.5px),
+    linear-gradient(135deg, var(--glass-sheen) 0%, transparent 40%),
+    linear-gradient(180deg, var(--glass-strong), var(--glass-strong-b));
+  border: 1px solid var(--glass-border);
+  border-top-color: var(--glass-border-top);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+
+/* The same glass look without the blur — for repeated items (suggestion
+   chips, tool cards, the account card) where a backdrop-filter per element
+   would cost scroll and animation performance. */
+@utility surface-card {
+  background:
+    linear-gradient(180deg, var(--glass-rim) 0, transparent 1.5px),
+    linear-gradient(135deg, var(--glass-sheen) 0%, transparent 45%),
+    linear-gradient(180deg, var(--surface-card), var(--surface-card-b));
+  border: 1px solid var(--glass-border);
+  border-top-color: var(--glass-border-top);
+}
+
+/* Content scrolling under the top bar fades out over 28px rather than
+   being clipped at a hard line. */
+@utility scroll-edge-fade {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -108,7 +346,7 @@ html,
 body {
   height: 100%;
   overflow: hidden;
-  background: var(--color-canvas);
+  background-color: var(--color-canvas);
   color: var(--color-fg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -120,8 +358,7 @@ body {
 }
 
 ::selection {
-  background: var(--color-accent-muted);
-  color: #fff;
+  background: rgb(123 131 246 / 0.28);
 }
 
 /* One global focus ring — never `outline-none` without this replacement. */
@@ -159,7 +396,7 @@ button:disabled {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-active);
+  background: var(--color-fg-faint);
   background-clip: content-box;
 }
 
@@ -194,6 +431,18 @@ button:disabled {
   }
 }
 
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @keyframes toast-in {
   from {
     opacity: 0;
@@ -209,7 +458,7 @@ button:disabled {
 @keyframes dialog-in {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.97);
+    transform: translateY(10px) scale(0.96);
   }
 
   to {
@@ -228,7 +477,7 @@ button:disabled {
   }
 
   30% {
-    transform: translateY(-5px);
+    transform: translateY(-4px);
     opacity: 1;
   }
 }
@@ -270,25 +519,253 @@ button:disabled {
   }
 }
 
+
+@keyframes backdrop-drift {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+  }
+
+  50% {
+    transform: translate3d(-7%, 5%, 0) rotate(10deg) scale(1.08);
+  }
+
+  100% {
+    transform: translate3d(6%, -6%, 0) rotate(-8deg) scale(1.04);
+  }
+}
+
+
+@keyframes shimmer-text {
+  from {
+    background-position: 200% 0;
+  }
+
+  to {
+    background-position: -200% 0;
+  }
+}
+
 @layer components {
 .animate-rise {
-  animation: rise 0.32s var(--ease-out-soft) both;
+  animation: rise 0.34s var(--ease-out-soft) both;
 }
 
 .animate-fade-in {
   animation: fade-in 0.2s var(--ease-standard) both;
 }
 
+.animate-pop-in {
+  animation: pop-in 0.22s var(--ease-out-soft) both;
+}
+
 .animate-toast-in {
-  animation: toast-in 0.22s var(--ease-out-soft) both;
+  animation: toast-in 0.24s var(--ease-out-soft) both;
 }
 
 .animate-dialog-in {
-  animation: dialog-in 0.18s var(--ease-out-soft) both;
+  animation: dialog-in 0.22s var(--ease-out-soft) both;
 }
 
 .animate-typing-bounce {
   animation: typing-bounce 1.3s ease-in-out infinite;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   PAGE BACKDROP  — soft pastel wash with a few faint sparkles
+   ═══════════════════════════════════════════════════════════════ */
+.app-backdrop {
+  position: relative;
+  /* Own stacking context, so the layers below can sit at negative z-index:
+     behind the app, but above this element's own background. */
+  isolation: isolate;
+  overflow: hidden;
+  background-color: var(--color-canvas);
+}
+
+/* The gradient lives on an oversized layer that slowly drifts. Moving it with
+   transform keeps the animation on the GPU instead of repainting a
+   full-screen gradient every frame. */
+/* Both layers are fixed to the viewport: they are decoration, and must never
+   add scrollable overflow to a scrolling page (the sign-in screen scrolls). */
+.app-backdrop::after {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  z-index: -2;
+  pointer-events: none;
+  background: var(--gradient-page);
+  animation: backdrop-drift 20s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.app-backdrop::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.7;
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 18%, rgb(255 255 255 / 0.95), transparent 60%),
+    radial-gradient(1px 1px at 32% 82%, rgb(255 255 255 / 0.9), transparent 60%),
+    radial-gradient(1.5px 1.5px at 58% 8%, rgb(255 255 255 / 0.9), transparent 60%),
+    radial-gradient(1px 1px at 76% 64%, rgb(255 255 255 / 0.85), transparent 60%),
+    radial-gradient(1.5px 1.5px at 92% 28%, rgb(255 255 255 / 0.9), transparent 60%),
+    radial-gradient(1px 1px at 46% 46%, rgb(255 255 255 / 0.7), transparent 60%);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   ANIMATED WAVE BACKGROUND  (components/layout/AnimatedWaveBackground)
+   Sits inside .app-backdrop at z-index -1: above the drifting gradient,
+   below every piece of UI. pointer-events: none so it never takes a click,
+   scroll or text selection.
+   ═══════════════════════════════════════════════════════════════ */
+.wave-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  /* Keep the reading area clean: the waves fade out towards the centre, so
+     the motion lives along the bottom and the sides. */
+  -webkit-mask-image: radial-gradient(ellipse 62% 58% at 50% 40%, transparent 30%, #000 88%);
+  mask-image: radial-gradient(ellipse 62% 58% at 50% 40%, transparent 30%, #000 88%);
+}
+
+.wave-edge {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.wave-edge-bottom {
+  bottom: 0;
+  height: clamp(180px, 40vh, 440px);
+}
+
+.wave-edge-top {
+  top: 0;
+  height: clamp(120px, 24vh, 260px);
+  transform: scaleY(-1);
+  opacity: var(--wave-top-opacity);
+}
+
+/* Twice the viewport wide; the path repeats every half, so sliding by -50%
+   is a seamless loop. */
+.wave-layer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 200%;
+  animation: wave-slide calc(var(--wave-duration, 20) * 1s / var(--wave-speed)) linear infinite;
+  will-change: transform;
+}
+
+/* A slow rise-and-fall on top of the slide is what makes it read as a
+   living, morphing surface rather than a conveyor belt. */
+.wave-swell {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+  animation: wave-swell calc(var(--swell-duration, 9) * 1s / var(--wave-speed)) ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.wave-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.wave-crest {
+  stroke: var(--wave-crest);
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+}
+
+.wave-1 {
+  --wave-duration: 24;
+  --swell-duration: 10;
+  opacity: var(--wave-opacity-1);
+}
+
+.wave-2 {
+  --wave-duration: 19;
+  --swell-duration: 8;
+  opacity: var(--wave-opacity-2);
+  animation-direction: reverse;
+}
+
+.wave-3 {
+  --wave-duration: 22;
+  --swell-duration: 12;
+  opacity: var(--wave-opacity-3);
+}
+
+.wave-4 {
+  --wave-duration: 16;
+  --swell-duration: 7;
+  opacity: var(--wave-opacity-4);
+  animation-direction: reverse;
+}
+
+/* Offset the swells so no two waves breathe in step. */
+.wave-2 .wave-swell {
+  animation-delay: -3s;
+}
+
+.wave-3 .wave-swell {
+  animation-delay: -6s;
+}
+
+.wave-4 .wave-swell {
+  animation-delay: -2s;
+}
+
+@keyframes wave-slide {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@keyframes wave-swell {
+  from {
+    transform: translate3d(0, 5%, 0) scaleY(0.92);
+  }
+
+  to {
+    transform: translate3d(0, 0, 0) scaleY(1.06);
+  }
+}
+
+/* Reduced motion: the same waves, held still. */
+@media (prefers-reduced-motion: reduce) {
+  .wave-layer,
+  .wave-swell {
+    animation: none !important;
+  }
+}
+
+/* Running tool label: a soft moving highlight across the text. */
+.shimmer-text {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-fg-subtle) 0%,
+    var(--color-fg-subtle) 40%,
+    var(--color-accent) 50%,
+    var(--color-fg-subtle) 60%,
+    var(--color-fg-subtle) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-text 2.2s linear infinite;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -305,7 +782,7 @@ button:disabled {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
+  background: linear-gradient(90deg, transparent, var(--skeleton-sheen), transparent);
   animation: skeleton-sweep 1.6s ease-in-out infinite;
 }
 
@@ -318,7 +795,8 @@ button:disabled {
   content: "";
   position: absolute;
   inset: 0;
-  background: var(--color-accent);
+  background-image: var(--gradient-brand);
+  border-radius: inherit;
   animation: indeterminate 1.4s ease-in-out infinite;
 }
 
@@ -331,12 +809,12 @@ button:disabled {
 .streaming-cursor:empty::after {
   content: "";
   display: inline-block;
-  width: 0.45em;
-  height: 1em;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  background: var(--color-accent-fg);
-  border-radius: 1px;
+  width: 0.5em;
+  height: 0.5em;
+  margin-left: 4px;
+  vertical-align: middle;
+  background-image: var(--gradient-brand);
+  border-radius: 999px;
   animation: blink-cursor 1s step-end infinite;
 }
 
@@ -348,9 +826,13 @@ button:disabled {
 /* ═══════════════════════════════════════════════════════════════
    MARKDOWN  (@tailwindcss/typography is not installed — styled here)
    ═══════════════════════════════════════════════════════════════ */
+/* Answer typography follows the common chat-assistant conventions
+   (ChatGPT, Claude, Gemini): ~16px body with generous line height, bold for
+   emphasis in the text colour, muted bullets, clearly stepped headings and
+   neutral inline code. */
 .md {
-  font-size: var(--text-body);
-  line-height: 1.72;
+  font-size: 1rem;
+  line-height: 1.75;
   color: var(--color-fg);
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -365,44 +847,56 @@ button:disabled {
 }
 
 .md p {
-  margin: 0 0 0.85em;
+  margin: 0 0 1em;
 }
 
 .md h1,
 .md h2,
 .md h3,
 .md h4 {
-  margin: 1.5em 0 0.6em;
+  margin: 1.6em 0 0.6em;
   font-weight: 600;
-  line-height: 1.3;
+  line-height: 1.35;
   letter-spacing: -0.01em;
   color: var(--color-fg);
 }
 
 .md h1 {
-  font-size: 1.35em;
+  font-size: 1.5em;
 }
 
 .md h2 {
-  font-size: 1.2em;
+  font-size: 1.3em;
 }
 
 .md h3 {
-  font-size: 1.07em;
+  font-size: 1.125em;
 }
 
 .md h4 {
   font-size: 1em;
 }
 
+/* A heading straight after a paragraph needs the space; one right after
+   another heading does not. */
+.md h1 + h2,
+.md h2 + h3,
+.md h3 + h4 {
+  margin-top: 0.8em;
+}
+
 .md ul,
 .md ol {
-  margin: 0 0 0.85em;
-  padding-left: 1.35em;
+  margin: 0 0 1em;
+  padding-left: 1.6em;
 }
 
 .md ul {
   list-style: disc;
+}
+
+.md ul ul {
+  list-style: circle;
 }
 
 .md ol {
@@ -410,30 +904,35 @@ button:disabled {
 }
 
 .md li {
-  margin-bottom: 0.3em;
-}
-
-/* GFM task lists: drop the bullet so the checkbox is the only marker. */
-.md li.task-list-item,
-.md li:has(> input[type="checkbox"]) {
-  list-style: none;
-  margin-left: -1.15em;
-}
-
-.md input[type="checkbox"] {
-  margin-right: 0.5em;
-  accent-color: var(--color-accent);
-  vertical-align: -0.1em;
+  margin: 0.4em 0;
+  padding-left: 0.2em;
 }
 
 .md li::marker {
   color: var(--color-fg-subtle);
 }
 
+/* Loose lists wrap items in <p>; without this they double-space. */
+.md li > p {
+  margin: 0;
+}
+
 .md li > ul,
 .md li > ol {
-  margin-top: 0.3em;
-  margin-bottom: 0.3em;
+  margin: 0.4em 0 0;
+}
+
+/* GFM task lists: drop the bullet so the checkbox is the only marker. */
+.md li.task-list-item,
+.md li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -1.4em;
+}
+
+.md input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--color-accent);
+  vertical-align: -0.1em;
 }
 
 .md strong {
@@ -448,22 +947,23 @@ button:disabled {
 .md a {
   color: var(--color-accent-fg);
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration-color: var(--color-accent-muted);
+  text-underline-offset: 3px;
 }
 
 .md a:hover {
-  color: #c4b5fd;
+  text-decoration-color: currentColor;
 }
 
 .md blockquote {
-  margin: 0 0 0.85em;
-  padding: 0.15em 0 0.15em 1em;
-  border-left: 2px solid var(--color-accent-muted);
+  margin: 0 0 1em;
+  padding: 0.1em 0 0.1em 1em;
+  border-left: 3px solid var(--color-line-strong);
   color: var(--color-fg-muted);
 }
 
 .md hr {
-  margin: 1.5em 0;
+  margin: 1.75em 0;
   border: 0;
   border-top: 1px solid var(--color-line);
 }
@@ -474,34 +974,43 @@ button:disabled {
   margin: 0 0 1em;
   max-width: 100%;
   overflow-x: auto;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
 }
 
 .md table {
   width: max-content;
   min-width: 100%;
   border-collapse: collapse;
-  font-size: var(--text-small);
+  font-size: 0.9375em;
+  line-height: 1.55;
 }
 
 .md th,
 .md td {
-  padding: 0.5em 0.8em;
-  border: 1px solid var(--color-line);
+  padding: 0.6em 1em;
+  border-bottom: 1px solid var(--color-line-subtle);
   text-align: left;
+  vertical-align: top;
+}
+
+.md tr:last-child td {
+  border-bottom: 0;
 }
 
 .md th {
   background: var(--color-hover);
   font-weight: 600;
+  color: var(--color-fg);
 }
 
 .md :not(pre) > code:not([class*="language-"]) {
   padding: 0.15em 0.4em;
-  border-radius: var(--radius-sm);
-  background: var(--color-accent-subtle);
-  border: 1px solid var(--color-line);
-  color: var(--color-accent-fg);
+  border-radius: 0.375rem;
+  background: var(--inline-code-bg);
+  color: var(--color-fg);
   font-size: 0.875em;
+  font-weight: 500;
   font-family: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
 }
 
@@ -510,10 +1019,116 @@ button:disabled {
   border-radius: var(--radius-md);
 }
 
-/* User turns sit on an accent-tinted surface — keep links legible there */
-.md-on-user a,
+/* ── Code & output blocks: the only card inside an answer ── */
+.code-pre {
+  margin: 0;
+  padding: 14px 16px;
+  background: transparent;
+  color: var(--syn-fg);
+  font-size: 13px;
+  line-height: 1.65;
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.code-pre code {
+  font: inherit;
+  color: inherit;
+  background: none;
+}
+
+.code-block .token.comment,
+.code-block .token.prolog,
+.code-block .token.doctype,
+.code-block .token.cdata {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+.code-block .token.keyword,
+.code-block .token.atrule,
+.code-block .token.important,
+.code-block .token.selector {
+  color: var(--syn-keyword);
+}
+
+.code-block .token.string,
+.code-block .token.char,
+.code-block .token.attr-value,
+.code-block .token.regex,
+.code-block .token.inserted {
+  color: var(--syn-string);
+}
+
+.code-block .token.function,
+.code-block .token.function-variable,
+.code-block .token.property,
+.code-block .token.tag {
+  color: var(--syn-function);
+}
+
+.code-block .token.number,
+.code-block .token.boolean,
+.code-block .token.constant,
+.code-block .token.symbol,
+.code-block .token.deleted {
+  color: var(--syn-number);
+}
+
+.code-block .token.class-name,
+.code-block .token.namespace,
+.code-block .token.attr-name {
+  color: var(--syn-class);
+}
+
+.code-block .token.builtin,
+.code-block .token.variable {
+  color: var(--syn-builtin);
+}
+
+/* Doubled class: Prism also tags `@` as punctuation, which would win. */
+.code-block .token.token.decorator,
+.code-block .token.token.annotation,
+.code-block .token.decorator .token {
+  color: var(--syn-decorator);
+}
+
+.code-block .token.punctuation,
+.code-block .token.operator {
+  color: var(--syn-punct);
+}
+
+.code-block .token.bold {
+  font-weight: 600;
+}
+
+.code-block .token.italic {
+  font-style: italic;
+}
+
+/* User turns sit on the brand gradient — keep everything white there. */
+.md-on-user,
+.md-on-user strong,
+.md-on-user h1,
+.md-on-user h2,
+.md-on-user h3,
+.md-on-user h4 {
+  color: var(--user-bubble-fg);
+}
+
+.md-on-user a {
+  color: var(--user-bubble-fg);
+  text-decoration-color: rgb(255 255 255 / 0.6);
+}
+
+.md-on-user li::marker {
+  color: rgb(255 255 255 / 0.8);
+}
+
 .md-on-user :not(pre) > code:not([class*="language-"]) {
-  color: #ddd6fe;
+  background: rgb(255 255 255 / 0.2);
+  color: var(--user-bubble-fg);
 }
 }
 

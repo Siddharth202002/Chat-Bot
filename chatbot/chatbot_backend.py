@@ -1172,6 +1172,13 @@ def _build_search_tool() -> Any:
 
     backends = (os.getenv("SEARCH_BACKENDS") or "duckduckgo, brave, yahoo").strip()
     return DuckDuckGoSearchRun(
+        # The stock description claims "current events", which overlaps with
+        # news_search and lets the model pick either for a news question.
+        description=(
+            "General web search for facts, explanations, products and how-tos. "
+            "For news or recent events use news_search. "
+            "Input should be a search query."
+        ),
         api_wrapper=DuckDuckGoSearchAPIWrapper(
             backend=backends,
             region=(os.getenv("SEARCH_REGION") or "in-en").strip(),
@@ -1194,6 +1201,57 @@ except Exception as exc:
         )
 
     search = duckduckgo_search_unavailable
+
+
+_NEWS_TIMELIMITS = {"d", "w", "m"}
+
+
+def _fetch_news(query: str, timelimit: str | None) -> list[dict[str, Any]]:
+    from ddgs import DDGS
+
+    return DDGS().news(
+        query,
+        region=(os.getenv("SEARCH_REGION") or "in-en").strip(),
+        timelimit=timelimit,
+        max_results=int(os.getenv("NEWS_MAX_RESULTS", "8")),
+    )
+
+
+@tool
+async def news_search(query: str, timelimit: str = "w") -> str:
+    """Search recent news articles. Use this instead of web search for news,
+    headlines, current events or "what's the latest on X" questions.
+
+    timelimit: "d" (past day), "w" (past week, the default) or "m" (past month).
+    Each result has a title, date, source, summary and url; cite the source and
+    link for every story you report."""
+    query = (query or "").strip()
+    if not query:
+        return "Please provide a topic to search the news for."
+    limit = (timelimit or "").strip().lower()
+    try:
+        results = await asyncio.to_thread(
+            _fetch_news, query, limit if limit in _NEWS_TIMELIMITS else "w"
+        )
+    except Exception as exc:
+        logger.warning("news_search failed: %s", exc)
+        return "News search is unavailable right now."
+    if not results:
+        return f"No recent news found for {query!r}."
+    return json.dumps(
+        [
+            {
+                "title": item.get("title"),
+                "date": item.get("date"),
+                "source": item.get("source"),
+                "summary": item.get("body"),
+                "url": item.get("url"),
+            }
+            for item in results
+        ],
+        ensure_ascii=False,
+    )
+
 
 @tool
 def rag_search(query: str) -> str:
@@ -1450,6 +1508,7 @@ async def get_weather(
 
 base_tools: list[Any] = [
     search,
+    news_search,
     Mathematical_calculations,
     get_stock_price,
     rag_search,
@@ -1868,9 +1927,69 @@ class StreamTurnCommitted:
         self.answered_by = answered_by
 
 
-# What a chat stream yields: answer text, plus the two out-of-band markers the
+class StreamToolActivity:
+    """
+    Yielded around each tool call so the client can show what is running.
+
+    Purely informational: nothing here is stored, and the answer text is
+    unaffected. ``status`` is "running" before the call and "done" or "error"
+    after it. ``args`` and ``data`` are trimmed previews (see
+    ``_tool_args_preview`` / ``_tool_result_preview``), never the raw payloads.
+    """
+
+    __slots__ = ("call_id", "name", "status", "args", "data")
+
+    def __init__(
+        self,
+        call_id: str,
+        name: str,
+        status: str,
+        args: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ):
+        self.call_id = call_id
+        self.name = name
+        self.status = status
+        self.args = args or {}
+        self.data = data
+
+
+# Enough to label a card ("Weather · Goa"), not enough to ship a document.
+_TOOL_ARG_MAX_KEYS = 6
+_TOOL_ARG_MAX_CHARS = 120
+_TOOL_RESULT_MAX_CHARS = 4000
+
+
+def _tool_args_preview(args: Any) -> dict[str, Any]:
+    """Scalar tool arguments, with long strings clipped, for the tool card."""
+    if not isinstance(args, dict):
+        return {}
+    preview: dict[str, Any] = {}
+    for key, value in args.items():
+        if len(preview) >= _TOOL_ARG_MAX_KEYS:
+            break
+        if isinstance(value, str):
+            preview[str(key)] = value[:_TOOL_ARG_MAX_CHARS]
+        elif isinstance(value, (bool, int, float)) or value is None:
+            preview[str(key)] = value
+    return preview
+
+
+def _tool_result_preview(result: Any) -> dict[str, Any] | None:
+    """A tool's result as a JSON object, if it is one and is small."""
+    if isinstance(result, str):
+        if len(result) > _TOOL_RESULT_MAX_CHARS:
+            return None
+        try:
+            result = json.loads(result)
+        except (TypeError, ValueError):
+            return None
+    return result if isinstance(result, dict) else None
+
+
+# What a chat stream yields: answer text, plus the out-of-band markers the
 # transport has to translate into their own SSE events.
-StreamEvent = str | _StreamReset | StreamTurnCommitted
+StreamEvent = str | _StreamReset | StreamTurnCommitted | StreamToolActivity
 
 # The chain answers from whichever provider is available, and each one has its
 # own house style: Groq's gpt-oss reaches for markdown tables and bold labels,
@@ -1965,6 +2084,7 @@ Identity rules (these override anything you believe about yourself):
 When the user asks about you or what you can do, introduce yourself briefly as
 {ASSISTANT_NAME} and mention that you can:
 - search the web for up-to-date information
+- find the latest news on any topic
 - answer questions from a PDF the user uploads
 - do mathematical calculations
 - look up live stock prices
@@ -2981,19 +3101,36 @@ async def _get_response_stream_for_config(
             break
 
         tool_messages: list[ToolMessage] = []
-        for tool_call in ai_message.tool_calls:
+        for call_index, tool_call in enumerate(ai_message.tool_calls):
             tool_name = tool_call["name"]
             tool_args = tool_call.get("args", {})
             tool_call_id = tool_call["id"]
+            activity_id = str(tool_call_id or f"{_round}-{call_index}")
+            args_preview = _tool_args_preview(tool_args)
+            yield StreamToolActivity(activity_id, tool_name, "running", args_preview)
 
             tool_obj = tools_by_name.get(tool_name)
+            tool_failed = False
             if tool_obj is None:
                 result = f"Tool '{tool_name}' is not available."
+                tool_failed = True
             else:
                 try:
                     result = await _invoke_tool(tool_obj, tool_args)
                 except Exception as exc:
                     result = f"Tool '{tool_name}' failed: {exc}"
+                    tool_failed = True
+
+            result_preview = _tool_result_preview(result)
+            if result_preview is not None and "error" in result_preview:
+                tool_failed = True
+            yield StreamToolActivity(
+                activity_id,
+                tool_name,
+                "error" if tool_failed else "done",
+                args_preview,
+                result_preview,
+            )
 
             tool_messages.append(
                 ToolMessage(content=str(result), name=tool_name, tool_call_id=tool_call_id)

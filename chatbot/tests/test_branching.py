@@ -268,7 +268,7 @@ async def _drain(stream) -> Turn:
         elif isinstance(event, chatbot_backend.StreamTurnCommitted):
             user_id = event.user_message_id
             assistant_id = event.assistant_message_id
-        else:
+        elif isinstance(event, str):
             text += event
     return Turn(text, user_id, assistant_id)
 

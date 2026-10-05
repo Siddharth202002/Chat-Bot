@@ -37,7 +37,7 @@ export default function ConfirmDialog({
   return (
     <div className="fixed inset-0 z-90 flex items-center justify-center p-4">
       <div
-        className="animate-fade-in absolute inset-0 bg-black/65 backdrop-blur-[2px]"
+        className="animate-fade-in absolute inset-0 bg-fg/25 backdrop-blur-sm"
         onClick={onCancel}
         aria-hidden
       />
@@ -47,12 +47,12 @@ export default function ConfirmDialog({
         aria-modal="true"
         aria-labelledby="confirm-title"
         aria-describedby="confirm-description"
-        className="animate-dialog-in relative w-full max-w-sm rounded-xl border border-line-strong bg-overlay p-6 shadow-e3"
+        className="animate-dialog-in glass-strong relative w-full max-w-sm rounded-3xl p-6 shadow-e3"
       >
         <div className="flex items-start gap-3">
           {destructive && (
             <span
-              className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-danger-subtle text-danger"
+              className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-danger-subtle text-danger"
               aria-hidden
             >
               <AlertTriangle className="h-4.5 w-4.5" strokeWidth={1.75} />

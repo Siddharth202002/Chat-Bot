@@ -40,6 +40,7 @@ from chatbot_backend import (
     JWT_COOKIE_NAME,
     JWT_EXP_SECONDS,
     StreamEvent,
+    StreamToolActivity,
     StreamTurnCommitted,
     ThreadBusy,
     UserExistsError,
@@ -554,6 +555,20 @@ async def _sse_events(
                     "answered_by": event.answered_by,
                 }
                 yield f"data: {json.dumps(payload)}\n\n"
+                continue
+            # Tool progress for the client's tool cards. Informational only;
+            # it never changes the answer text.
+            if isinstance(event, StreamToolActivity):
+                tool_payload = {
+                    "tool": {
+                        "id": event.call_id,
+                        "name": event.name,
+                        "status": event.status,
+                        "args": event.args,
+                        "data": event.data,
+                    }
+                }
+                yield f"data: {json.dumps(tool_payload, default=str)}\n\n"
                 continue
             yield f"data: {json.dumps({'token': event})}\n\n"
         yield f"data: {json.dumps({'done': True})}\n\n"

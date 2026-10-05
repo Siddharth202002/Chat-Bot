@@ -150,7 +150,7 @@ async def drain(stream) -> tuple[str, Any]:
             text = ""
         elif isinstance(event, chatbot_backend.StreamTurnCommitted):
             committed = event
-        else:
+        elif isinstance(event, str):
             text += event
     return text, committed
 

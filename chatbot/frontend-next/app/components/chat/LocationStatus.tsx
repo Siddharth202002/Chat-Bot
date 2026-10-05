@@ -4,7 +4,7 @@ import { type LocationStatus as LocationPhase } from "@/app/lib/location";
 import { cn } from "@/app/lib/utils";
 import { Loader2, MapPinOff, X } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import Button, { IconButton } from "./ui/Button";
+import Button, { IconButton } from "../ui/Button";
 
 interface LocationStatusProps {
   status: LocationPhase;
@@ -82,11 +82,11 @@ export default function LocationStatus({
                   : "Could not work out where you are."));
 
   return (
-    <div className="w-full shrink-0 px-4 sm:px-6 lg:px-8">
+    <div className="w-full shrink-0 px-3 sm:px-6 lg:px-10">
       <div
         className={cn(
           "mx-auto flex w-full max-w-3xl flex-col gap-1.5 pt-2",
-          isFailure && "rounded-md border border-line bg-raised p-2.5"
+          isFailure && "glass-strong rounded-2xl p-3 shadow-e1"
         )}
       >
         <div className="flex items-center gap-2">
@@ -115,7 +115,7 @@ export default function LocationStatus({
               label="Dismiss location notice"
               size="sm"
               onClick={onDismiss}
-              className="h-6 w-6 shrink-0 rounded-sm"
+              className="h-6 w-6 shrink-0"
             >
               <X className="h-3.5 w-3.5" strokeWidth={2} />
             </IconButton>
@@ -136,7 +136,7 @@ export default function LocationStatus({
               aria-label="City to use for your location"
               autoComplete="address-level2"
               className={cn(
-                "h-8 min-w-0 flex-1 rounded-md border border-line bg-canvas px-2.5",
+                "h-9 min-w-0 flex-1 rounded-full border border-line bg-raised px-3.5",
                 "text-small text-fg placeholder:text-fg-subtle",
                 "outline-none focus:border-focus sm:max-w-64"
               )}
