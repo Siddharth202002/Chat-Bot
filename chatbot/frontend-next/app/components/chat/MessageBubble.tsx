@@ -264,6 +264,15 @@ const markdownComponents = {
       </div>
     );
   },
+  // Links in an answer (news sources, search results) open in a new tab so
+  // clicking one doesn't navigate away from the conversation.
+  a({ href, children }: { href?: string; children?: React.ReactNode }) {
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer">
+        {children}
+      </a>
+    );
+  },
   // Every fenced block is rendered here, at the <pre>, so a block with no
   // language (typically program output) gets the same card as real code.
   // Inline `code` never reaches this path: it has no <pre> around it.
