@@ -25,7 +25,7 @@ export default function Logo({
     // eslint-disable-next-line @next/next/no-img-element -- a fixed-size local
     // SVG has nothing for next/image to optimise; it would only add a wrapper.
     <img
-      src="/brand/zeno-mark-spark.svg"
+      src="/brand/zeno-mark-network.svg"
       alt=""
       aria-hidden
       width={size}
