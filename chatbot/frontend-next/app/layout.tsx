@@ -17,8 +17,8 @@ export const metadata: Metadata = {
   // Declared explicitly so the brand mark wins over app/favicon.ico, which
   // Next would otherwise serve as the tab icon.
   icons: {
-    icon: [{ url: "/brand/zeno-mark-spark.svg", type: "image/svg+xml" }],
-    apple: [{ url: "/brand/zeno-mark-spark.svg" }],
+    icon: [{ url: "/brand/zeno-mark-network.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/brand/zeno-mark-network.svg" }],
   },
 };
 
