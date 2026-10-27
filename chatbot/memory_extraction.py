@@ -29,6 +29,7 @@ from typing import Any, Awaitable, Callable
 
 import memory_config
 import memory_store
+import search_trace
 
 logger = logging.getLogger("chatbot.memory.extraction")
 
@@ -381,6 +382,18 @@ async def extract_memories(messages: list[dict[str, str]]) -> list[dict[str, str
     timeout = memory_config.memory_timeout_seconds()
     attempts = memory_config.memory_max_attempts()
     delay = memory_config.memory_retry_base_delay()
+    # TEMPORARY (search accuracy investigation): shapes only, no message text.
+    search_trace.emit(
+        "MISTRAL_TRACE",
+        "request",
+        purpose="long_term_memory_extraction",
+        caller="memory_extraction.extract_memories (post-response background task)",
+        model=model,
+        window_messages=len(messages),
+        roles=[str(m.get("role")) for m in messages],
+        transcript_chars=len(transcript),
+        transcript="[redacted]",
+    )
 
     response = None
     for attempt in range(1, attempts + 1):
@@ -402,6 +415,9 @@ async def extract_memories(messages: list[dict[str, str]]) -> list[dict[str, str
             timed_out = isinstance(exc, asyncio.TimeoutError)
             detail = f"timed out after {timeout}s" if timed_out else str(exc)
             if attempt >= attempts or not (timed_out or _is_retryable(exc)):
+                search_trace.emit(
+                    "MISTRAL_TRACE", "failed", attempt=attempt, error=detail[:200]
+                )
                 logger.warning(
                     "Mistral memory extraction failed (attempt %s/%s): %s",
                     attempt,
@@ -423,7 +439,15 @@ async def extract_memories(messages: list[dict[str, str]]) -> list[dict[str, str
     if not text:
         logger.info("Mistral returned an empty memory extraction response.")
         return []
-    return validate_extraction(text)
+    candidates = validate_extraction(text)
+    search_trace.emit(
+        "MISTRAL_TRACE",
+        "response",
+        response_chars=len(text),
+        candidates=len(candidates),
+        memory_types=[c.get("memory_type") for c in candidates],
+    )
+    return candidates
 
 
 # --------------------------------------------------------------------------
@@ -492,6 +516,13 @@ async def _run_extraction_locked(
 ) -> dict[str, Any]:
     count = await memory_store.bump_message_counter(user_id, thread_id)
     trigger = decide_trigger(count)
+    search_trace.emit(
+        "MISTRAL_TRACE",
+        "trigger_check",
+        thread_id=thread_id,
+        messages_since_extraction=count,
+        trigger=trigger,
+    )
     if trigger is None:
         return report
     report["trigger"] = trigger

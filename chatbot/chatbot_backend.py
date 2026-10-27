@@ -50,6 +50,7 @@ import location_state
 import memory_config
 import memory_extraction
 import memory_store
+import search_trace
 import service_cache
 import weather_service
 
@@ -491,7 +492,10 @@ async def _ainvoke_with_fallback(messages: list[BaseMessage]) -> BaseMessage:
     last_error: Exception | None = None
     for index, (name, model) in enumerate(chain):
         try:
-            return await model.ainvoke(messages)
+            search_trace.log_llm_input(name, _model_id_of(model), -1, messages)
+            response = await model.ainvoke(messages)
+            search_trace.log_llm_output(name, _model_id_of(model), -1, response)
+            return response
         except Exception as exc:
             last_error = exc
             remaining = len(chain) - index - 1
@@ -1201,6 +1205,10 @@ except Exception as exc:
         )
 
     search = duckduckgo_search_unavailable
+
+# TEMPORARY (search accuracy investigation): logs each ddgs backend's HTTP
+# status, parsed results and ranking. Behaviour is unchanged.
+search_trace.install_ddgs_trace()
 
 
 _NEWS_TIMELIMITS = {"d", "w", "m"}
@@ -2210,7 +2218,9 @@ async def process_memory_turn(user_id: str, thread_id: str) -> None:
     Background entry point called after the chat response has been sent.
     Swallows all failures: memory is never allowed to affect the chat path.
     """
-    await memory_extraction.process_turn(user_id, thread_id)
+    # TEMPORARY: log under the id of the turn that triggered it.
+    with search_trace.turn(search_trace.turn_for_thread(thread_id)):
+        await memory_extraction.process_turn(user_id, thread_id)
 
 
 async def list_user_memories(user_id: str) -> list[dict[str, Any]]:
@@ -2613,6 +2623,7 @@ async def tool_node(state: Chat_State) -> dict[str, list[BaseMessage]]:
             except Exception as exc:
                 result = f"Tool '{tool_name}' failed: {exc}"
 
+        search_trace.log_tool_result(tool_name, tool_args, result, failed=False)
         tool_messages.append(
             ToolMessage(content=str(result), name=tool_name, tool_call_id=tool_call_id)
         )
@@ -2817,18 +2828,30 @@ async def _turn_context(
     turn is built from exactly the same context a fresh one would be -- which
     includes the picked model, so Retry can re-answer with a different one.
     """
-    memories = await retrieve_memory_context(user_id, query)
-    user_token = _active_user_id.set(user_id)
-    thread_token = _active_thread_id.set(thread_id)
-    memory_token = _active_memories.set(memories)
-    provider_token = _active_provider.set(model or None)
-    try:
-        yield
-    finally:
-        _active_provider.reset(provider_token)
-        _active_memories.reset(memory_token)
-        _active_thread_id.reset(thread_token)
-        _active_user_id.reset(user_token)
+    # TEMPORARY: per-turn correlation id for the search investigation logs.
+    with search_trace.turn() as tid:
+        search_trace.remember_thread_turn(thread_id, tid)
+        memories = await retrieve_memory_context(user_id, query)
+        search_trace.emit(
+            "TURN_TRACE",
+            "start",
+            thread_id=thread_id,
+            query=search_trace.clip(search_trace.redact(query), 500),
+            model_pick=model,
+            memories_retrieved=len(memories),
+        )
+        user_token = _active_user_id.set(user_id)
+        thread_token = _active_thread_id.set(thread_id)
+        memory_token = _active_memories.set(memories)
+        provider_token = _active_provider.set(model or None)
+        try:
+            yield
+        finally:
+            search_trace.emit("TURN_TRACE", "end", thread_id=thread_id)
+            _active_provider.reset(provider_token)
+            _active_memories.reset(memory_token)
+            _active_thread_id.reset(thread_token)
+            _active_user_id.reset(user_token)
 
 
 async def get_response_stream(
@@ -2945,6 +2968,17 @@ async def _get_response_stream_for_config(
         history, model_summary = plan.history, plan.summary
     else:
         history, model_summary = prior_messages, None
+    search_trace.emit(
+        "TURN_TRACE",
+        "context_plan",
+        reset_history=reset_history,
+        forked_from_checkpoint=config["configurable"].get("checkpoint_id"),
+        prior_messages=len(prior_messages),
+        history_sent=len(history),
+        plan_failed=plan is None,
+        summary_chars=len(context_manager.summary_text(model_summary)),
+        summary_changed=bool(plan is not None and plan.summary_changed),
+    )
     working_messages = _messages_for_model([*history, *delta_messages], model_summary)
     provider_chain = _ordered_chain(_active_provider.get())
     emitted_any_text = False
@@ -2976,6 +3010,9 @@ async def _get_response_stream_for_config(
             streamed_this_round = 0
             is_tool_round = False
             output_filter = _DegenerateOutputFilter()
+            search_trace.log_llm_input(
+                provider_name, _model_id_of(model), _round, working_messages
+            )
             try:
                 async for chunk in model.astream(working_messages):
                     streamed_chunk = (
@@ -3071,6 +3108,12 @@ async def _get_response_stream_for_config(
 
         ai_message = message_chunk_to_message(streamed_chunk)
         has_tool_calls = isinstance(ai_message, AIMessage) and bool(ai_message.tool_calls)
+        search_trace.log_llm_output(
+            answered_by,
+            _model_id_of(dict(provider_chain).get(answered_by)),
+            _round,
+            ai_message,
+        )
 
         if has_tool_calls:
             # Text streamed before the first tool-call delta has to be taken
@@ -3124,6 +3167,9 @@ async def _get_response_stream_for_config(
             result_preview = _tool_result_preview(result)
             if result_preview is not None and "error" in result_preview:
                 tool_failed = True
+            search_trace.log_tool_result(
+                tool_name, tool_args, result, failed=tool_failed, round_index=_round
+            )
             yield StreamToolActivity(
                 activity_id,
                 tool_name,
@@ -3201,6 +3247,13 @@ async def _get_response_stream_for_config(
             config,
             values,
             as_node="chat",
+        )
+        search_trace.emit(
+            "TURN_TRACE",
+            "state_persisted",
+            messages_written=[type(m).__name__ for m in update],
+            summary_written="context_summary" in values,
+            answered_by=answered_by,
         )
 
         answer = next(
